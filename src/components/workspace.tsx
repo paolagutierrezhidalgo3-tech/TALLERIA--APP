@@ -55,6 +55,20 @@ export function Workspace() {
   }, []);
   useEffect(() => {
     if (!isSupabaseMode) return;
+    const raw = (window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '') || window.location.search.slice(1);
+    if (!raw.includes('error')) return;
+    const params = new URLSearchParams(raw);
+    if (!params.get('error')) return;
+    const code = params.get('error_code');
+    const text = code === 'otp_expired'
+      ? 'El enlace de confirmación ha caducado o ya se ha usado. Vuelve a registrarte o inicia sesión para solicitar uno nuevo.'
+      : params.get('error_description') || 'No se ha podido completar la verificación del correo.';
+    window.history.replaceState(null, '', window.location.pathname);
+    // Deferred to avoid a setState call synchronous with the effect body.
+    setTimeout(() => setError(text), 0);
+  }, []);
+  useEffect(() => {
+    if (!isSupabaseMode) return;
     let alive = true;
     async function session() {
       try {

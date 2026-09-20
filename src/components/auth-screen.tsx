@@ -13,7 +13,7 @@ export function AuthScreen({ onDemo }: { onDemo: () => void }) {
     try {
       const auth = getSupabase().auth;
       const credentials = { email: String(form.get('email')), password: String(form.get('password')) };
-      const { error } = register ? await auth.signUp(credentials) : await auth.signInWithPassword(credentials);
+      const { error } = register ? await auth.signUp({ ...credentials, options: { emailRedirectTo: window.location.origin } }) : await auth.signInWithPassword(credentials);
       if (error) throw error;
       if (register) setMessage('Cuenta creada. Si está activada la confirmación, revisa tu correo antes de iniciar sesión.');
     } catch (err) { setMessage(err instanceof Error ? err.message : 'No se ha podido iniciar sesión.'); }
