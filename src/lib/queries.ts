@@ -1,12 +1,13 @@
+import { searchText } from './search';
 import type { State } from './domain';
 export type View = 'dashboard' | 'requests' | 'customers' | 'vehicles' | 'conversations' | 'appointments' | 'reception' | 'settings';
 export interface ViewQuery { view: View; offset: number; search: string; status: string }
-export interface LookupOption { id: string; label: string }
+export interface LookupOption { id: string; label: string; version?: number }
 export const PAGE_SIZE = 25;
 export const defaultQuery: ViewQuery = { view: 'dashboard', offset: 0, search: '', status: 'all' };
 export function projectState(s: State, query: ViewQuery = defaultQuery): State {
-  const q = query.search.toLocaleLowerCase();
-  const match = (value: string) => value.toLocaleLowerCase().includes(q);
+  const q = searchText(query.search);
+  const match = (value: string) => searchText(value).includes(q);
   const name = (id: string) => s.customers.find(c => c.id===id)?.name ?? '';
   const plate = (id: string) => s.vehicles.find(v => v.id===id)?.plate ?? '';
   let ids: string[] = [];

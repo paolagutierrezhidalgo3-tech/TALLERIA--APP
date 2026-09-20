@@ -1,9 +1,16 @@
 import type { State, Resource } from './domain';
 import { tryNormalizePhone } from './phone';
 export function upgradeDemo(source: State): State {
-  if (source.schema_version === 2) return source;
+  if (source.schema_version === 3) return source;
+  if (source.schema_version === 2) {
+    const upgraded = structuredClone(source);
+    upgraded.schema_version = 3;
+    upgraded.requests.forEach(r => { r.version ??= 1; });
+    upgraded.appointments.forEach(a => { a.version ??= 1; });
+    return upgraded;
+  }
   const state = structuredClone(source);
-  state.schema_version = 2;
+  state.schema_version = 3;
   state.workshop.version ??= 1;
   const primary: Resource = { id: crypto.randomUUID(), workshop_id: state.workshop.id, name: 'Puesto principal', kind: 'bay', active: true, version: 1 };
   state.resources = state.resources?.length ? state.resources : [primary];
@@ -24,8 +31,8 @@ export function upgradeDemo(source: State): State {
     seen.set(normalized,c.id); c.phone = normalized; return true;
   });
   state.vehicles.forEach(v => { v.customer_id = redirects.get(v.customer_id) ?? v.customer_id; v.version ??= 1; });
-  state.requests.forEach(r => { r.customer_id = redirects.get(r.customer_id) ?? r.customer_id; });
+  state.requests.forEach(r => { r.version ??= 1; r.customer_id = redirects.get(r.customer_id) ?? r.customer_id; });
   state.requests.sort((a,b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
-  state.appointments.forEach(a => { a.resource_id ??= state.resources![0].id; });
+  state.appointments.forEach(a => { a.version ??= 1; a.resource_id ??= state.resources![0].id; });
   return state;
 }

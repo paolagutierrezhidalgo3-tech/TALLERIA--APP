@@ -56,7 +56,7 @@ Consulta [la arquitectura](docs/architecture.md) para conocer las relaciones, de
 El desarrollo y la demo funcionan sin este paso.
 
 1. Crea o selecciona un proyecto de Supabase. No necesitas contratar un plan de pago para probar.
-2. Aplica las tres migraciones de `supabase/migrations` en orden (001, 002 y 003). Si la inicial ya está aplicada, ejecuta solo 002 y 003. Consulta [la guía de actualización](docs/iteration-2.md) y realiza una copia de seguridad antes de migrar datos reales.
+2. Aplica las cuatro migraciones de `supabase/migrations` en orden (001, 002, 003 y 004). Si la inicial ya está aplicada, ejecuta las pendientes: 002, 003 y 004. Consulta [la guía de actualización](docs/iteration-2.md) y realiza una copia de seguridad antes de migrar datos reales.
 3. Copia `.env.example` a `.env.local` y configura:
    - `NEXT_PUBLIC_DATA_MODE=supabase`
    - `NEXT_PUBLIC_SUPABASE_URL`: URL del proyecto.

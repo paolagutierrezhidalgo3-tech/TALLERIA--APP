@@ -14,6 +14,6 @@ export function createDemo(): State {
   state.requests[1].status = 'pendiente';
   state.requests[2].status = 'en_proceso';
   const start = new Date(); start.setDate(start.getDate() + 1); start.setHours(10, 0, 0, 0);
-  state = applyCommand(state, { type: 'appointment', id: crypto.randomUUID(), request_id: state.requests[3].id, starts_at: start.toISOString(), duration_minutes: 60, notes: 'Primera revisión del vehículo.' });
+  state = applyCommand(state, { type: 'appointment', request_version: state.requests[3].version, id: crypto.randomUUID(), request_id: state.requests[3].id, starts_at: start.toISOString(), duration_minutes: 60, notes: 'Primera revisión del vehículo.' });
   return state;
 }

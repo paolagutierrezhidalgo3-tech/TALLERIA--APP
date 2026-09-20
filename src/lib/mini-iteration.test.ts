@@ -1,0 +1,23 @@
+import { describe, expect, it, vi } from 'vitest';
+import { applyCommand, type State } from './domain';
+import { upgradeDemo } from './demo-migration';
+import { projectState, type View } from './queries';
+import { searchText } from './search';
+import { DemoRepository } from './repository';
+const now=new Date('2030-01-01T08:00:00Z');
+function fixture():State {
+ const s=upgradeDemo({workshop:{id:crypto.randomUUID(),name:'Taller',phone:'',address:'',hours:'',timezone:'Europe/Madrid',appointment_minutes:60},customers:[],vehicles:[],requests:[],conversations:[],appointments:[]});
+ return applyCommand(s,{type:'intake',id:crypto.randomUUID(),data:{name:'José García Martín',phone:'600123456',brand:'SEAT',model:'León',plate:'1234BCD',reason:'Revisión en León',availability:'Mañanas',notes:''},messages:[{role:'user',content:'Revisión en León'}]},now);
+}
+function book(s:State) {return {type:'appointment' as const,id:crypto.randomUUID(),request_id:s.requests[0].id,request_version:s.requests[0].version,starts_at:'2030-01-02T10:00:00Z',duration_minutes:60,notes:''};}
+describe('Búsqueda sin diacríticos',()=>{
+ it.each([['leon','León'],['garcia','García'],['martin','Martín'],['LEÓN','Leo\u0301n']])('%s equivale a %s',(a,b)=>expect(searchText(a)).toBe(searchText(b)));
+ it.each([['vehicles','leon'],['customers','garcia'],['customers','martin'],['requests','revision'],['conversations','leon']] as [View,string][])('busca %s por %s',(view,search)=>expect(projectState(fixture(),{view,search,offset:0,status:'all'}).page_info?.total).toBe(1));
+ it('normaliza selectores demo y entrega la versión de la solicitud elegida',async()=>{const s=fixture();vi.stubGlobal('localStorage',{getItem:()=>JSON.stringify(s),setItem:()=>{}});try{const repo=new DemoRepository();expect(await repo.lookup('customer','garcia')).toHaveLength(1);expect(await repo.lookup('request','revision')).toMatchObject([{id:s.requests[0].id,version:1}]);}finally{vi.unstubAllGlobals();}});
+});
+describe('Actualizaciones obsoletas de solicitudes y citas',()=>{
+ it('rechaza al segundo usuario con la misma versión de solicitud',()=>{const s=fixture();const cmd={type:'status' as const,id:s.requests[0].id,version:1,status:'pendiente' as const};const updated=applyCommand({...s,user_id:'owner'},cmd,now);expect(()=>applyCommand({...updated,user_id:'staff'},{...cmd,status:'en_proceso'},now)).toThrow('ha cambiado');expect(updated.requests[0]).toMatchObject({status:'pendiente',version:2});expect(updated.audit).toHaveLength(2);});
+ it('rechaza reprogramación y cancelación obsoletas sin modificar cita ni solicitud',()=>{const s=fixture(),cmd=book(s),booked=applyCommand(s,cmd,now);const edit={...cmd,version:1,request_version:2,starts_at:'2030-01-03T10:00:00Z'};const changed=applyCommand({...booked,user_id:'staff'},edit,now);expect(changed.appointments[0].version).toBe(2);expect(changed.requests[0].version).toBe(3);expect(()=>applyCommand(changed,{...edit,request_version:3},now)).toThrow('ha cambiado');expect(()=>applyCommand(changed,{type:'appointment_status',id:cmd.id,version:1,request_version:3,status:'cancelled'},now)).toThrow('ha cambiado');expect(()=>applyCommand(changed,{type:'appointment_status',id:cmd.id,version:2,request_version:2,status:'completed'},now)).toThrow('ha cambiado');const done=applyCommand(changed,{type:'appointment_status',id:cmd.id,version:2,request_version:3,status:'completed'},now);expect(done.requests[0]).toMatchObject({version:4,status:'completada'});expect(done.appointments[0].version).toBe(3);});
+ it('exige la versión leída al crear una cita y al cambiar estado',()=>{const s=fixture();expect(()=>applyCommand(s,{type:'status',id:s.requests[0].id,status:'pendiente'},now)).toThrow('ha cambiado');const changed=applyCommand(s,{type:'status',id:s.requests[0].id,version:1,status:'pendiente'},now);expect(()=>applyCommand(changed,book(s),now)).toThrow('ha cambiado');expect(applyCommand(changed,book(changed),now).appointments).toHaveLength(1);});
+ it('actualiza la demo v2 sin perder datos ni reiniciar versiones ya existentes',()=>{const s=fixture();s.schema_version=2;delete s.requests[0].version;s.appointments=[{id:crypto.randomUUID(),workshop_id:s.workshop.id,request_id:s.requests[0].id,starts_at:'2030-01-02T10:00:00Z',duration_minutes:60,status:'scheduled',notes:'Conservar',resource_id:s.resources![0].id}];const updated=upgradeDemo(s);expect(updated.requests[0].version).toBe(1);expect(updated.appointments[0]).toMatchObject({version:1,notes:'Conservar'});updated.requests[0].version=5;expect(upgradeDemo(updated).requests[0].version).toBe(5);expect(s.requests[0].version).toBeUndefined();});
+});

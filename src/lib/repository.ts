@@ -1,3 +1,4 @@
+import { searchText } from './search';
 import { applyCommand, type Command, type State } from './domain';
 import { createDemo } from './demo';
 import { upgradeDemo } from './demo-migration';
@@ -20,7 +21,7 @@ export class DemoRepository implements WorkshopRepository {
       try {
         state = JSON.parse(saved) as State;
         if (!state.workshop?.id || !Array.isArray(state.customers) || !Array.isArray(state.requests) || !Array.isArray(state.vehicles) || !Array.isArray(state.conversations) || !Array.isArray(state.appointments)) throw new Error();
-        upgraded = state.schema_version !== 2;
+        upgraded = state.schema_version !== 3;
         state = upgradeDemo(state);
       } catch { throw new Error('Los datos demo guardados no se pueden leer. Usa «Restablecer demo» para recuperarlos.'); }
     } else state = upgradeDemo(createDemo());
@@ -43,9 +44,9 @@ export class DemoRepository implements WorkshopRepository {
     return save();
   }
   async lookup(kind: 'customer' | 'request', search: string): Promise<LookupOption[]> {
-    const s = this.read(); const q=search.toLowerCase().slice(0,120);
-    if(kind==='customer') return s.customers.filter(c=>(c.name+' '+c.phone).toLowerCase().includes(q)).slice(0,20).map(c=>({id:c.id,label:c.name+' · '+c.phone}));
-    return s.requests.filter(r=>!['completada','cancelada'].includes(r.status)&&!s.appointments.some(a=>a.request_id===r.id&&a.status==='scheduled')).map(r=>({id:r.id,label:(s.customers.find(c=>c.id===r.customer_id)?.name??'')+' · '+r.reason})).filter(r=>r.label.toLowerCase().includes(q)).slice(0,20);
+    const s = this.read(); const q=searchText(search.slice(0,120));
+    if(kind==='customer') return s.customers.filter(c=>searchText(c.name+' '+c.phone).includes(q)).slice(0,20).map(c=>({id:c.id,label:c.name+' · '+c.phone}));
+    return s.requests.filter(r=>!['completada','cancelada'].includes(r.status)&&!s.appointments.some(a=>a.request_id===r.id&&a.status==='scheduled')).map(r=>({id:r.id,version:r.version,label:(s.customers.find(c=>c.id===r.customer_id)?.name??'')+' · '+r.reason})).filter(r=>searchText(r.label).includes(q)).slice(0,20);
   }
   async reset(): Promise<State> {
     if(this.role!=='owner') throw new Error('Solo el propietario puede realizar esta operación.');

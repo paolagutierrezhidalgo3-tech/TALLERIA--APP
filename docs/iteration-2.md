@@ -2,7 +2,7 @@
 
 ## Actualizar sin perder la primera iteración
 
-Aplicar las migraciones en orden: 202609200001_initial.sql, 202609200002_capacity_security.sql y 202609200003_paged_workspace.sql. Si 001 ya está aplicada, ejecutar solamente 002 y 003. No ejecutar de nuevo la inicial ni reemplazar tablas. Hacer una copia de seguridad antes de migrar datos reales y verificar en un proyecto de pruebas.
+Aplicar las migraciones en orden: 202609200001_initial.sql, 202609200002_capacity_security.sql y 202609200003_paged_workspace.sql y 202609200004_search_versions.sql. Si 001 ya está aplicada, ejecutar las pendientes: 002, 003 y 004. No ejecutar de nuevo la inicial ni reemplazar tablas. Hacer una copia de seguridad antes de migrar datos reales y verificar en un proyecto de pruebas.
 
 002 asigna un «Puesto principal» a cada taller y a sus citas anteriores. Fusiona clientes cuyos teléfonos representan el mismo número: conserva el UUID menor, reasigna vehículos y solicitudes y guarda los campos originales del duplicado en audit_events.metadata.original_customer, visible solo al owner. Los teléfonos antiguos que no se puedan interpretar se conservan con phone_e164 nulo y se señalan para revisión manual. No se inventa un número ni se descarta el cliente.
 
@@ -51,3 +51,15 @@ Next 16.3.5 instalado sí reconoce experimental.useTypeScriptCli: se conserva fa
 Pruebas de dominio y PostgreSQL/PGlite cubren equivalencia de teléfonos, migración con datos previos, referencias, recursos simultáneos, versiones obsoletas, permisos, RLS, paginación, auditoría e idempotencia/límites. Ejecutar pnpm typecheck, pnpm lint, pnpm test y pnpm build. Probar el flujo conversacional y el cambio de roles demo, la confirmación de cancelación y el móvil.
 
 Falta validar las migraciones y el flujo Auth sobre un Supabase real (PGlite no reemplaza esa validación), provisionar Vercel, recuperación de contraseña, invitaciones, política de retención/consentimiento, realtime y calendario avanzado. No se añaden WhatsApp, telefonía, n8n, Stripe ni IA real. ReceptionProvider permanece desacoplado.
+
+## Cierre de auditoría: búsqueda y concurrencia
+
+Aplicar también `202609200004_search_versions.sql` después de 003. No modifica datos de negocio previos: añade versión 1 a solicitudes y citas existentes y actualiza las funciones de búsqueda y escritura. La demo actualiza su formato a versión 3 conservando la clave local y todos los registros.
+
+Las listas de clientes, vehículos, solicitudes y conversaciones y los selectores de clientes/solicitudes normalizan consulta y texto mediante minúsculas, Unicode NFD y eliminación de marcas combinantes U+0300–U+036F. Así leon/León, garcia/García y martin/Martín coinciden, también con acentos Unicode descompuestos. No cambia el texto guardado ni las reglas de identidad de clientes/vehículos. No requiere extensiones de PostgreSQL.
+
+Los comandos status necesitan la versión leída de la solicitud. appointment necesita request_version y, si reprograma una cita existente, version de esa cita. appointment_status necesita ambas versiones. PostgreSQL comprueba las versiones bajo el bloqueo transaccional existente del taller; la modificación de cita y solicitud incrementa ambas versiones dentro de la misma transacción. Una versión omitida u obsoleta se rechaza con un mensaje de negocio; no se guarda parcialmente ni se añade auditoría de éxito. Crear una cita también rechaza una solicitud obsoleta. Los reintentos de recepción siguen siendo idempotentes.
+
+Los formularios y la confirmación de cancelación conservan la versión del registro que abrió el usuario. Ante un conflicto, «Actualizar datos» vuelve a consultar la vista y cierra el formulario obsoleto; el usuario puede abrirlo de nuevo para revisar y guardar. No hay reintento automático que sobrescriba cambios ajenos. Los selectores remotos incluyen la versión elegida aunque la solicitud esté fuera de la página cargada.
+
+Las nuevas pruebas simulan dos usuarios con la misma versión y verifican que el segundo guardado se rechaza, que las versiones de cita/solicitud se incrementan juntas y que se puede guardar después de refrescar. También comprueban las búsquedas de listas y selectores en demo y PostgreSQL. No se conecta ningún servicio real en este cierre.

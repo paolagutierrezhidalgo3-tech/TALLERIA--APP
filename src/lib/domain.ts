@@ -22,16 +22,16 @@ export interface Workshop { version?: number; id: string; name: string; phone: s
 export interface Customer { version?: number; phone_e164?: string | null; id: string; workshop_id: string; name: string; phone: string; notes: string }
 export interface Vehicle { version?: number; id: string; workshop_id: string; customer_id: string; brand: string; model: string; plate: string }
 export interface Conversation { id: string; workshop_id: string; messages: Message[]; channel: 'simulator'; created_at: string }
-export interface ServiceRequest { id: string; workshop_id: string; customer_id: string; vehicle_id: string; conversation_id: string; reason: string; availability: string; notes: string; status: RequestStatus; created_at: string }
-export interface Appointment { resource_id?: string; id: string; workshop_id: string; request_id: string; starts_at: string; duration_minutes: number; status: 'scheduled' | 'completed' | 'cancelled'; notes: string }
+export interface ServiceRequest { version?: number; id: string; workshop_id: string; customer_id: string; vehicle_id: string; conversation_id: string; reason: string; availability: string; notes: string; status: RequestStatus; created_at: string }
+export interface Appointment { version?: number; resource_id?: string; id: string; workshop_id: string; request_id: string; starts_at: string; duration_minutes: number; status: 'scheduled' | 'completed' | 'cancelled'; notes: string }
 export interface Resource { id: string; workshop_id: string; name: string; kind: 'bay' | 'mechanic' | 'lift'; active: boolean; version?: number }
 export interface AuditEvent { id: string; workshop_id: string; user_id: string | null; action: string; entity_type: string; entity_id: string; created_at: string; metadata?: Record<string, unknown> }
 export interface State { schema_version?: number; role?: 'owner' | 'staff'; user_id?: string; resources?: Resource[]; audit?: AuditEvent[]; metrics?: { new_requests: number; upcoming: number; pending_customers: number; completed: number }; page_info?: { view: string; offset: number; total: number; ids: string[] }; customer_counts?: Record<string, { vehicles: number; requests: number }>; workshop: Workshop; customers: Customer[]; vehicles: Vehicle[]; conversations: Conversation[]; requests: ServiceRequest[]; appointments: Appointment[] }
 export type Command =
   | { type: 'intake'; id: string; data: Intake; messages: Message[] }
-  | { type: 'status'; id: string; status: RequestStatus }
-  | { type: 'appointment'; resource_id?: string; id: string; request_id: string; starts_at: string; duration_minutes: number; notes: string }
-  | { type: 'appointment_status'; id: string; status: Appointment['status'] }
+  | { type: 'status'; version?: number; id: string; status: RequestStatus }
+  | { type: 'appointment'; version?: number; request_version?: number; resource_id?: string; id: string; request_id: string; starts_at: string; duration_minutes: number; notes: string }
+  | { type: 'appointment_status'; version?: number; request_version?: number; id: string; status: Appointment['status'] }
   | { type: 'customer'; customer: Customer }
   | { type: 'vehicle'; vehicle: Vehicle }
   | { type: 'settings'; workshop: Workshop }
@@ -59,18 +59,20 @@ export function applyCommand(current: State, command: Command, now = new Date())
     }
     const conversation_id = crypto.randomUUID();
     s.conversations.unshift({ id: conversation_id, workshop_id, messages: command.messages, channel: 'simulator', created_at: now.toISOString() });
-    s.requests.unshift({ id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: d.availability, notes: d.notes, status: 'nueva', created_at: now.toISOString() });
+    s.requests.unshift({ version: 1, id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: d.availability, notes: d.notes, status: 'nueva', created_at: now.toISOString() });
   }
   if (command.type === 'status') {
     const request = s.requests.find(r => r.id === command.id);
     if (!request) throw new Error('No se ha encontrado la solicitud.');
+    checkVersion(request, command);
     if (command.status === 'cita_creada' && !s.appointments.some(a => a.request_id === request.id && a.status === 'scheduled')) throw new Error('Crea primero una cita para esta solicitud.');
     if (s.appointments.some(a => a.request_id === request.id && a.status === 'scheduled') && command.status !== 'cita_creada') throw new Error('Completa o cancela primero la cita asociada.');
-    request.status = command.status;
+    request.status = command.status; request.version = (request.version ?? 1) + 1;
   }
   if (command.type === 'appointment') {
     const request = s.requests.find(r => r.id === command.request_id);
     if (!request || ['completada', 'cancelada'].includes(request.status)) throw new Error('La solicitud no está disponible para una cita.');
+    checkVersion(request, { version: command.request_version });
     const resource_id = command.resource_id ?? s.resources?.find(r => r.active)?.id;
     if (s.resources && !s.resources.some(r => r.id === resource_id && r.active)) throw new Error('Selecciona un recurso activo de este taller.');
     const start = new Date(command.starts_at).getTime();
@@ -79,16 +81,20 @@ export function applyCommand(current: State, command: Command, now = new Date())
     if (s.appointments.some(a => a.id !== command.id && a.request_id === request.id && a.status === 'scheduled')) throw new Error('Esta solicitud ya tiene una cita activa.');
     if (s.appointments.some(a => a.id !== command.id && a.status === 'scheduled' && a.resource_id === resource_id && start < new Date(a.starts_at).getTime() + a.duration_minutes * 60000 && start + command.duration_minutes * 60000 > new Date(a.starts_at).getTime())) throw new Error('Ese horario coincide con otra cita del mismo recurso. Elige otro horario o recurso.');
     const existing = s.appointments.find(a => a.id === command.id);
+    checkVersion(existing, command);
     if (existing && (existing.request_id !== request.id || existing.status !== 'scheduled')) throw new Error('No se puede modificar esta cita.');
-    const appointment: Appointment = { id: command.id, workshop_id, resource_id, request_id: request.id, starts_at: new Date(start).toISOString(), duration_minutes: command.duration_minutes, notes: command.notes.trim().slice(0, 2000), status: 'scheduled' };
-    s.appointments = [...s.appointments.filter(a => a.id !== command.id), appointment]; request.status = 'cita_creada';
+    const appointment: Appointment = { version: existing ? (existing.version ?? 1) + 1 : 1, id: command.id, workshop_id, resource_id, request_id: request.id, starts_at: new Date(start).toISOString(), duration_minutes: command.duration_minutes, notes: command.notes.trim().slice(0, 2000), status: 'scheduled' };
+    s.appointments = [...s.appointments.filter(a => a.id !== command.id), appointment]; request.status = 'cita_creada'; request.version = (request.version ?? 1) + 1;
   }
   if (command.type === 'appointment_status') {
     const appointment = s.appointments.find(a => a.id === command.id);
     if (!appointment || appointment.status !== 'scheduled' || command.status === 'scheduled') throw new Error('La cita ya no está activa.');
-    appointment.status = command.status;
+    checkVersion(appointment, command);
     const request = s.requests.find(r => r.id === appointment.request_id);
-    if (request) request.status = command.status === 'completed' ? 'completada' : 'pendiente';
+    if (!request) throw new Error('No se ha encontrado la solicitud.');
+    checkVersion(request, { version: command.request_version });
+    appointment.status = command.status; appointment.version = (appointment.version ?? 1) + 1;
+    request.status = command.status === 'completed' ? 'completada' : 'pendiente'; request.version = (request.version ?? 1) + 1;
   }
   if (command.type === 'customer') {
     const c = { ...command.customer, phone: phoneSchema.parse(command.customer.phone) };
