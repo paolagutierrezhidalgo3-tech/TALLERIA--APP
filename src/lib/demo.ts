@@ -9,7 +9,7 @@ export function createDemo(): State {
     ['Miguel López', '600 000 104', 'Renault', 'Clio', '3456MNP', 'Solicitar cita para revisión antes de un viaje', 'Mañana o pasado', 'Sale de viaje el fin de semana.'],
   ];
   examples.forEach(([name, phone, brand, model, plate, reason, availability, notes], i) => {
-    state = applyCommand(state, { type: 'intake', id: crypto.randomUUID(), data: { name, phone, brand, model, plate, reason, availability, notes }, messages: [{ role: 'assistant', content: '¡Hola! Soy el recepcionista digital del taller. ¿En qué puedo ayudarte?' }, { role: 'user', content: `Soy ${name}. ${reason}. Mi vehículo es un ${brand} ${model}, matrícula ${plate}. Mi teléfono es ${phone}. Disponibilidad: ${availability}.` }] }, new Date(Date.now() - i * 45 * 60000));
+    state = applyCommand(state, { type: 'intake', id: crypto.randomUUID(), data: { name, phone, brand, model, plate, reason, availability, notes }, messages: [{ role: 'assistant', content: '¡Hola! Soy el recepcionista digital del taller. ¿En qué puedo ayudarte?' }, { role: 'user', content: `Soy ${name}. ${reason}. Mi vehículo es un ${brand} ${model}, matrícula ${plate}. Mi teléfono es ${phone}. Disponibilidad: ${availability}.` }] }, new Date(Date.now() - (examples.length - 1 - i) * 45 * 60000));
   });
   state.requests[1].status = 'pendiente';
   state.requests[2].status = 'en_proceso';

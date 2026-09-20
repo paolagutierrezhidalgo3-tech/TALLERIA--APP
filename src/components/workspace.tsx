@@ -1,0 +1,147 @@
+'use client';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowDownLeft, ArrowRight, CalendarDays, Car, Check, ChevronRight, Inbox, LayoutDashboard, LogOut, Menu, MessageSquare, Plus, Search, Settings2, Sparkles, Users, Wrench, X } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { statusLabels, statuses, type Appointment, type Command, type Customer, type RequestStatus, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
+import { DemoRepository, type WorkshopRepository } from '@/lib/repository';
+import { getSupabase, isSupabaseMode } from '@/lib/supabase/client';
+import { SupabaseRepository } from '@/lib/supabase/repository';
+import { AuthScreen } from './auth-screen';
+import { Badge, dateLabel, Empty, Field, initials, Modal } from './ui';
+import { AppointmentEditor, CustomerEditor, Settings, VehicleEditor } from './editors';
+import { Reception } from './reception';
+
+const pages = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Todo lo importante, de un vistazo.' },
+  { id: 'requests', label: 'Solicitudes', icon: Inbox, description: 'Cada consulta es una oportunidad de ayudar.' },
+  { id: 'customers', label: 'Clientes', icon: Users, description: 'Las personas que confían en tu taller.' },
+  { id: 'vehicles', label: 'Vehículos', icon: Car, description: 'Cada vehículo, conectado con su cliente.' },
+  { id: 'conversations', label: 'Conversaciones', icon: MessageSquare, description: 'El contexto completo de cada consulta.' },
+  { id: 'appointments', label: 'Citas', icon: CalendarDays, description: 'Organiza el trabajo que está por venir.' },
+  { id: 'reception', label: 'Simulador de recepción', icon: Sparkles, description: 'Una conversación que se convierte en trabajo organizado.' },
+  { id: 'settings', label: 'Configuración', icon: Settings2, description: 'Haz que TALLERIA se adapte a tu taller.' },
+] as const;
+type Page = typeof pages[number]['id'];
+type Editor = { type: 'customer'; initial?: Customer } | { type: 'vehicle'; initial?: Vehicle } | { type: 'appointment'; initial?: Appointment; request?: ServiceRequest } | null;
+export function Workspace() {
+  const repository = useRef<WorkshopRepository | null>(null);
+  const mutation = useRef(false);
+  const [state, setState] = useState<State | null>(null);
+  const [screen, setScreen] = useState<'loading' | 'auth' | 'onboarding' | 'app'>(isSupabaseMode ? 'loading' : 'auth');
+  const [page, setPage] = useState<Page>('dashboard');
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<RequestStatus | 'all'>('all');
+  const [mobile, setMobile] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [conversation, setConversation] = useState<string | null>(null);
+  const [editor, setEditor] = useState<Editor>(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const load = useCallback(async (repo: WorkshopRepository) => {
+    repository.current = repo;
+    try { setState(await repo.load()); setScreen('app'); setError(''); }
+    catch (err) { setError(err instanceof Error ? err.message : 'No se han podido cargar los datos.'); setScreen('auth'); }
+  }, []);
+  useEffect(() => {
+    if (!isSupabaseMode) return;
+    let alive = true;
+    async function session() {
+      try {
+        const db = getSupabase();
+        const { data: { user }, error: authError } = await db.auth.getUser();
+        if (!alive) return;
+        if (authError || !user) { setState(null); setScreen('auth'); return; }
+        const membership = await db.from('workshop_members').select('workshop_id').eq('user_id', user.id).limit(1).maybeSingle();
+        if (membership.error) throw membership.error;
+        if (!alive) return;
+        if (!membership.data) setScreen('onboarding');
+        else await load(new SupabaseRepository(membership.data.workshop_id));
+      } catch (err) { if (alive) { setError(err instanceof Error ? err.message : 'Error de conexión'); setScreen('auth'); } }
+    }
+    void session();
+    let cleanup = () => {};
+    try {
+      // Defer work to avoid awaiting Supabase API inside its auth lock.
+      const { data } = getSupabase().auth.onAuthStateChange(() => { setTimeout(() => { if (alive) void session(); }, 0); });
+      cleanup = () => data.subscription.unsubscribe();
+    } catch { /* The loading error explains the missing configuration. */ }
+    return () => { alive = false; cleanup(); };
+  }, [load]);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(''), 4500);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  useEffect(() => {
+    if (isSupabaseMode) return;
+    const sync = () => { if (repository.current && screen === 'app') void load(repository.current); };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, [load, screen]);
+  async function execute(command: Command) {
+    if (!repository.current || mutation.current) return false;
+    mutation.current = true; setBusy(true); setError('');
+    try { setState(await repository.current.execute(command)); setNotice('Cambios guardados'); return true; }
+    catch (err) { setError(err instanceof Error ? err.message : 'No se han podido guardar los cambios.'); return false; }
+    finally { mutation.current = false; setBusy(false); }
+  }
+  async function onboarding(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault(); setBusy(true); setError('');
+    try {
+      const name = String(new FormData(e.currentTarget).get('name')).trim();
+      const { data, error: rpcError } = await getSupabase().rpc('create_workshop', { p_name: name });
+      if (rpcError) throw rpcError;
+      await load(new SupabaseRepository(data as string));
+    } catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido crear el taller.'); }
+    finally { setBusy(false); }
+  }
+  async function logout() {
+    try { if (isSupabaseMode) { const { error } = await getSupabase().auth.signOut(); if (error) throw error; } repository.current = null; setState(null); setPage('dashboard'); setSelected(null); setConversation(null); setEditor(null); setScreen('auth'); }
+    catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido cerrar la sesión.'); }
+  }
+  function navigate(next: Page) { setPage(next); setSearch(''); setSelected(null); setConversation(null); setMobile(false); setError(''); }
+  async function resetDemo() { try { await load(new DemoRepository()); const next = await new DemoRepository().reset(); setState(next); setScreen('app'); setResetOpen(false); setNotice('Demo restablecida'); } catch { setError('No se puede guardar la demo. Comprueba que el navegador permita el almacenamiento local.'); } }
+  const errorBanner = error && <div className="error-toast" role="alert"><span>{error}</span><button className="icon-button" aria-label="Cerrar aviso" onClick={() => setError('')}><X size={17}/></button></div>;
+  if (screen === 'loading') return <main className="loading"><Wrench size={32}/><p>Preparando tu taller…</p></main>;
+  if (screen === 'auth') return <>{errorBanner}<AuthScreen onDemo={() => void load(new DemoRepository())}/>{!isSupabaseMode && error && <button className="recovery button" onClick={() => setResetOpen(true)}>Restablecer demo</button>}{resetOpen && <Modal title="Restablecer datos demo" onClose={() => setResetOpen(false)}><p>Se borrarán los cambios guardados de la demo en este navegador.</p><button className="button primary" onClick={() => void resetDemo()}>Restablecer datos</button></Modal>}</>;
+  if (screen === 'onboarding') return <main className="onboarding">{errorBanner}<form className="card" onSubmit={onboarding}><span className="feature-icon"><Wrench/></span><h1>Vamos a preparar tu taller</h1><p className="muted">Tu cuenta ya está lista. Crea el espacio de trabajo de tu negocio.</p><Field label="Nombre del taller"><input required name="name" minLength={2} maxLength={100} placeholder="Taller Motor Norte"/></Field><button className="button primary full" disabled={busy}>Crear mi taller<ArrowRight size={18}/></button><button type="button" className="text-button" onClick={() => void logout()}>Cerrar sesión</button></form></main>;
+  if (!state) return null;
+  const currentPage = pages.find(p => p.id === page)!;
+  const newCount = state.requests.filter(r => r.status === 'nueva').length;
+  const customer = (id: string) => state.customers.find(c => c.id === id);
+  const vehicle = (id: string) => state.vehicles.find(v => v.id === id);
+  const matches = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().includes(search.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase());
+  const filteredRequests = state.requests.filter(r => (filter === 'all' || r.status === filter) && matches([customer(r.customer_id)?.name, customer(r.customer_id)?.phone, vehicle(r.vehicle_id)?.plate, r.reason].join(' ')));
+  const upcoming = state.appointments.filter(a => a.status === 'scheduled').sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+  const pendingClients = new Set(state.requests.filter(r => ['nueva', 'pendiente'].includes(r.status)).map(r => r.customer_id)).size;
+  const activeRequest = state.requests.find(r => r.id === selected);
+  const activeConversation = state.conversations.find(c => c.id === conversation);
+  const day = new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: state.workshop.timezone }).format(new Date());
+  function requestTable(items: ServiceRequest[]) {
+    return items.length ? <div className="table-wrap"><table><thead><tr><th>Cliente / vehículo</th><th>Motivo de la consulta</th><th>Estado</th><th>Recibida</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{items.map(r => { const c = customer(r.customer_id), v = vehicle(r.vehicle_id); return <tr key={r.id}><td><div className="person-cell"><span className="avatar">{initials(c?.name ?? '?')}</span><div><b>{c?.name}</b><small>{v?.brand} {v?.model} · {v?.plate || 'Sin matrícula'}</small></div></div></td><td><span className="reason-cell">{r.reason}</span><small className="source"><MessageSquare size={12}/> Recepción simulada</small></td><td><Badge status={r.status}/></td><td className="muted nowrap">{dateLabel(r.created_at, state!.workshop.timezone)}</td><td><button className="icon-button" aria-label={'Ver solicitud de ' + c?.name} onClick={() => setSelected(r.id)}><ChevronRight size={18}/></button></td></tr>; })}</tbody></table></div> : <Empty title="No hay solicitudes aquí">Prueba otra búsqueda o crea una desde el simulador.</Empty>;
+  }
+  function appointmentCard(a: Appointment) {
+    const r = state!.requests.find(r => r.id === a.request_id);
+    return <article className="appointment-item" key={a.id}><div className="appointment-time">{new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: state!.workshop.timezone }).format(new Date(a.starts_at))}<small>{a.duration_minutes} min</small></div><div><b>{r && customer(r.customer_id)?.name}</b><p>{r?.reason}</p><small>{dateLabel(a.starts_at, state!.workshop.timezone)}</small></div><span className={'appointment-state ' + a.status}>{a.status === 'scheduled' ? 'Programada' : a.status === 'completed' ? 'Completada' : 'Cancelada'}</span>{page === 'appointments' && a.status === 'scheduled' && <div className="appointment-actions"><button className="button small" onClick={() => setEditor({ type: 'appointment', initial: a })}>Reprogramar</button><button className="button small" disabled={busy} onClick={() => void execute({ type: 'appointment_status', id: a.id, status: 'completed' })}><Check size={14}/>Completar</button><button className="text-button danger" disabled={busy} onClick={() => void execute({ type: 'appointment_status', id: a.id, status: 'cancelled' })}>Cancelar cita</button></div>}</article>;
+  }
+  return <div className="app-shell">{mobile && <button className="sidebar-backdrop" aria-label="Cerrar menú" onClick={() => setMobile(false)}/>}<aside className={'sidebar ' + (mobile ? 'is-open' : '')}><a href="#" className="brand" onClick={e => { e.preventDefault(); navigate('dashboard'); }}><span className="brand-mark"><Wrench size={21}/></span>TALLERIA<span className="brand-dot">.</span></a><div className="workshop-switch"><span className="workshop-avatar"><Wrench size={18}/></span><div><b>{state.workshop.name}</b><small>Espacio de trabajo</small></div></div><span className="nav-label">TU TALLER</span><nav aria-label="Navegación principal">{pages.filter(p => p.id !== 'settings' && p.id !== 'reception').map(p => <button key={p.id} className={'nav-item ' + (page === p.id ? 'active' : '')} onClick={() => navigate(p.id)} aria-current={page === p.id ? 'page' : undefined}><p.icon size={19}/>{p.label}{p.id === 'requests' && newCount > 0 && <span className="nav-count">{newCount}</span>}</button>)}</nav><span className="nav-label second-label">RECEPCIÓN DIGITAL</span><button className={'nav-item ' + (page === 'reception' ? 'active' : '')} onClick={() => navigate('reception')}><Sparkles size={19}/><span>Simulador</span><span className="mini-label">DEMO</span></button><div className="sidebar-bottom"><div className="reception-status"><span className="online"><i/>Tu recepción, organizada</span><p>Menos interrupciones.<br/>Más tiempo para tu taller.</p></div><button className={'nav-item ' + (page === 'settings' ? 'active' : '')} onClick={() => navigate('settings')}><Settings2 size={19}/>Configuración</button><button className="nav-item" onClick={() => void logout()}><LogOut size={18}/>{isSupabaseMode ? 'Cerrar sesión' : 'Salir de la demo'}</button></div></aside><div className="main-shell"><header className="topbar"><div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="Abrir menú" onClick={() => setMobile(true)}><Menu size={21}/></button><span>Mi taller</span><ChevronRight size={13}/><b>{currentPage.label}</b></div><div className="topbar-right"><span className="mode-chip"><span/>{isSupabaseMode ? 'Mi taller' : 'Modo demo'}</span><span className="header-divider"/><span className="avatar dark">{initials(state.workshop.name)}</span></div></header><main className="main-content"><div className="page-heading"><div><div className="eyebrow">{page === 'dashboard' ? day : 'TU TALLER, EN ORDEN'}</div><h1>{page === 'dashboard' ? 'Un buen día para tu taller.' : currentPage.label}</h1><p>{currentPage.description}</p></div>{page !== 'reception' && <button className="button primary" onClick={() => navigate('reception')}><Plus size={18}/>Simular recepción</button>}</div>{!isSupabaseMode && <div className="demo-strip"><Sparkles size={16}/><span>Estás explorando un taller demo. Tus cambios se guardan en este navegador.</span><button onClick={() => setResetOpen(true)}>Restablecer demo</button></div>}{page === 'dashboard' && <><div className="metrics"><Metric icon={Inbox} title="Solicitudes nuevas" value={newCount} detail="Listas para revisar" color="purple"/><Metric icon={CalendarDays} title="Citas próximas" value={upcoming.filter(a => new Date(a.starts_at) >= new Date()).length} detail="Tu agenda, al día" color="blue"/><Metric icon={Users} title="Clientes pendientes" value={pendingClients} detail="Esperando tu respuesta" color="orange"/><Metric icon={Check} title="Solicitudes completadas" value={state.requests.filter(r => r.status === 'completada').length} detail="Trabajo bien organizado" color="green"/></div><div className="dashboard-grid"><section className="card requests-card"><div className="card-heading"><div><h2>Últimas solicitudes <span className="count-pill">{state.requests.length}</span></h2><p>De la conversación a tu bandeja.</p></div><button className="text-button" onClick={() => navigate('requests')}>Ver todas<ArrowRight size={16}/></button></div>{requestTable(state.requests.slice(0, 5))}</section><section className="card agenda-card"><div className="card-heading"><div><h2>Próximas citas</h2><p>Un vistazo a lo que viene.</p></div><CalendarDays size={20} className="muted"/></div>{upcoming.length ? upcoming.slice(0, 3).map(appointmentCard) : <Empty title="Agenda despejada">Crea una cita desde una solicitud.</Empty>}<button className="button full" onClick={() => navigate('appointments')}>Abrir agenda<ArrowRight size={16}/></button></section></div><div className="dashboard-bottom"><section className="reception-banner"><span className="banner-icon"><Sparkles size={27}/></span><div><span className="eyebrow">TU NUEVO RECEPCIONISTA DIGITAL</span><h2>Tu próxima solicitud empieza<br/>con una conversación.</h2><p>Descubre cómo TALLERIA recoge y organiza cada consulta.</p><button className="button primary" onClick={() => navigate('reception')}>Probar el simulador<ArrowRight size={16}/></button></div><div className="banner-art" aria-hidden="true"><span><MessageSquare size={23}/></span><i/><span><Inbox size={23}/></span><i/><span><CalendarDays size={23}/></span></div></section><section className="card activity-card"><h2>Actividad reciente</h2>{state.requests.slice(0, 3).map(r => <div className="activity" key={r.id}><span><ArrowDownLeft size={16}/></span><div><b>Solicitud de {customer(r.customer_id)?.name}</b><small>{dateLabel(r.created_at, state.workshop.timezone)} · {statusLabels[r.status]}</small></div></div>)}</section></div></>}
+  {page === 'requests' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Buscar cliente, matrícula o consulta…"/><label className="filter-label">Estado<select value={filter} onChange={e => setFilter(e.target.value as RequestStatus | 'all')}><option value="all">Todos los estados</option>{statuses.map(s => <option value={s} key={s}>{statusLabels[s]}</option>)}</select></label></div>{requestTable(filteredRequests)}</section>}
+  {page === 'customers' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Buscar nombre o teléfono…"/><button className="button primary" onClick={() => setEditor({ type: 'customer' })}><Plus size={16}/>Nuevo cliente</button></div><div className="entity-grid">{state.customers.filter(c => matches(c.name + ' ' + c.phone)).map(c => <article className="entity-card" key={c.id}><span className="avatar large">{initials(c.name)}</span><h3>{c.name}</h3><a href={'tel:' + c.phone.replace(/\s/g, '')}>{c.phone}</a><p>{state.vehicles.filter(v => v.customer_id === c.id).length} vehículos · {state.requests.filter(r => r.customer_id === c.id).length} solicitudes</p>{c.notes && <p>{c.notes}</p>}<button className="button small" onClick={() => setEditor({ type: 'customer', initial: c })}>Editar cliente</button></article>)}</div>{!state.customers.filter(c => matches(c.name + ' ' + c.phone)).length && <Empty title="No se encontraron clientes"/>}</section>}
+  {page === 'vehicles' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Buscar marca, matrícula o cliente…"/><button className="button primary" onClick={() => setEditor({ type: 'vehicle' })}><Plus size={16}/>Nuevo vehículo</button></div><div className="entity-grid">{state.vehicles.filter(v => matches(v.brand + ' ' + v.model + ' ' + v.plate + ' ' + customer(v.customer_id)?.name)).map(v => <article className="entity-card" key={v.id}><span className="vehicle-icon"><Car size={28}/></span><h3>{v.brand} {v.model}</h3><span className="plate">{v.plate || 'Sin matrícula'}</span><p>{customer(v.customer_id)?.name}</p><button className="button small" onClick={() => setEditor({ type: 'vehicle', initial: v })}>Editar vehículo</button></article>)}</div>{!state.vehicles.filter(v => matches(v.brand + ' ' + v.model + ' ' + v.plate + ' ' + customer(v.customer_id)?.name)).length && <Empty title="No se encontraron vehículos"/>}</section>}
+  {page === 'conversations' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Buscar en las conversaciones…"/><span className="muted">{state.conversations.length} conversaciones</span></div>{state.conversations.filter(c => matches(c.messages.map(m => m.content).join(' '))).map(c => { const r = state.requests.find(r => r.conversation_id === c.id); return <button key={c.id} className="conversation-row" onClick={() => setConversation(c.id)}><span className="avatar"><MessageSquare size={19}/></span><div><b>{r ? customer(r.customer_id)?.name : 'Recepción'}</b><p>{r?.reason ?? 'Conversación simulada'}</p><small>{dateLabel(c.created_at, state.workshop.timezone)} · Simulador</small></div><ChevronRight size={19}/></button>; })}{!state.conversations.filter(c => matches(c.messages.map(m => m.content).join(' '))).length && <Empty title="No hay conversaciones"/>}</section>}
+  {page === 'appointments' && <section className="card"><div className="list-toolbar"><div><h2>Agenda del taller</h2><p className="muted">Zona horaria: {state.workshop.timezone}</p></div><button className="button primary" onClick={() => setEditor({ type: 'appointment' })}><Plus size={16}/>Nueva cita</button></div>{state.appointments.length ? [...state.appointments].sort((a, b) => a.starts_at.localeCompare(b.starts_at)).map(appointmentCard) : <Empty title="Tu agenda está lista">Crea una solicitud y asígnale su primera cita.</Empty>}</section>}
+  {page === 'reception' && <Reception execute={execute} onCreated={() => { navigate('requests'); setFilter('nueva'); setNotice('Solicitud creada con su cliente, vehículo y conversación'); }}/>}
+  {page === 'settings' && <Settings state={state} execute={execute}/>}
+  <footer className="footer"><span>TALLERIA · Tu taller, en orden.</span><span>{isSupabaseMode ? 'Datos de tu taller' : 'Prototipo · Recepción simulada'}</span></footer></main></div>
+  {notice && <div className="toast" role="status"><Check size={17}/>{notice}</div>}{errorBanner}
+  {activeRequest && <Modal title="Detalle de la solicitud" onClose={() => setSelected(null)}><div className="detail-top"><Badge status={activeRequest.status}/><small>{dateLabel(activeRequest.created_at, state.workshop.timezone, true)}</small></div><h3>{customer(activeRequest.customer_id)?.name}</h3><a href={'tel:' + customer(activeRequest.customer_id)?.phone}>{customer(activeRequest.customer_id)?.phone}</a><p className="vehicle-detail"><Car size={18}/>{vehicle(activeRequest.vehicle_id)?.brand} {vehicle(activeRequest.vehicle_id)?.model} · {vehicle(activeRequest.vehicle_id)?.plate || 'Sin matrícula'}</p><dl className="detail-list"><dt>Motivo</dt><dd>{activeRequest.reason}</dd><dt>Disponibilidad</dt><dd>{activeRequest.availability}</dd><dt>Observaciones</dt><dd>{activeRequest.notes || 'Sin observaciones'}</dd></dl><Field label="Estado de la solicitud"><select disabled={busy} value={activeRequest.status} onChange={e => void execute({ type: 'status', id: activeRequest.id, status: e.target.value as RequestStatus })}>{statuses.map(s => <option key={s} value={s}>{statusLabels[s]}</option>)}</select></Field><div className="detail-actions"><button className="button" onClick={() => { setConversation(activeRequest.conversation_id); setSelected(null); }}><MessageSquare size={16}/>Ver conversación</button>{!['completada', 'cancelada', 'cita_creada'].includes(activeRequest.status) && <button className="button primary" onClick={() => { setEditor({ type: 'appointment', request: activeRequest }); setSelected(null); }}><CalendarDays size={16}/>Crear cita</button>}</div></Modal>}
+  {activeConversation && <Modal title="Conversación de recepción" onClose={() => setConversation(null)}><p className="muted">Simulación · {dateLabel(activeConversation.created_at, state.workshop.timezone)}</p><div className="conversation-history">{activeConversation.messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'assistant' ? 'TALLERIA' : 'Cliente'}</small><p>{m.content}</p></div>)}</div><button className="button full" onClick={() => { setSelected(state.requests.find(r => r.conversation_id === activeConversation.id)?.id ?? null); setConversation(null); }}>Ver solicitud vinculada<ArrowRight size={16}/></button></Modal>}
+  {editor?.type === 'customer' && <CustomerEditor state={state} initial={editor.initial} execute={execute} onClose={() => setEditor(null)}/>}
+  {editor?.type === 'vehicle' && <VehicleEditor state={state} initial={editor.initial} execute={execute} onClose={() => setEditor(null)}/>}
+  {editor?.type === 'appointment' && <AppointmentEditor state={state} initial={editor.initial} request={editor.request} execute={execute} onClose={() => setEditor(null)}/>}
+  {resetOpen && <Modal title="Restablecer datos demo" onClose={() => setResetOpen(false)}><p>Se borrarán los cambios de la demo en este navegador y se recuperarán los clientes y solicitudes de ejemplo.</p><div className="detail-actions"><button className="button" onClick={() => setResetOpen(false)}>Conservar cambios</button><button className="button primary" onClick={() => void resetDemo()}>Restablecer demo</button></div></Modal>}</div>;
+}
+function SearchInput({ value, onChange, placeholder }: { value: string; onChange: (s: string) => void; placeholder: string }) { return <label className="search-input"><Search size={18}/><input aria-label={placeholder} placeholder={placeholder} value={value} onChange={e => onChange(e.target.value)}/></label>; }
+function Metric({ icon: Icon, title, value, detail, color }: { icon: LucideIcon; title: string; value: number; detail: string; color: string }) { return <section className="card metric"><div><span>{title}</span><span className={'metric-icon ' + color}><Icon size={19}/></span></div><strong>{value.toString().padStart(2, '0')}</strong><small><span className={'metric-dot ' + color}/>{detail}</small></section>; }
