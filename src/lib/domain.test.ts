@@ -1,0 +1,74 @@
+import { describe, expect, it } from 'vitest';
+import { applyCommand, intakeSchema, type Command, type Intake, type State } from './domain';
+import { MockReceptionProvider, questions } from './reception/provider';
+const now = new Date('2030-01-01T08:00:00Z');
+const intake: Intake = { name: 'Cliente Prueba', phone: '600 123 456', brand: 'SEAT', model: 'León', plate: '1234 bcd', reason: 'Revisión anual', availability: 'Mañanas', notes: '' };
+function empty(): State { return { workshop: { id: crypto.randomUUID(), name: 'Taller Uno', phone: '', address: '', hours: '', timezone: 'Europe/Madrid', appointment_minutes: 60 }, customers: [], vehicles: [], conversations: [], requests: [], appointments: [] }; }
+function receive(state = empty(), data = intake, id = crypto.randomUUID()) { return applyCommand(state, { type: 'intake', id, data, messages: [{ role: 'user', content: 'Quiero una revisión' }] }, now); }
+function appointment(state: State, starts_at = '2030-01-02T10:00:00Z'): Command { return { type: 'appointment', id: crypto.randomUUID(), request_id: state.requests[0].id, starts_at, duration_minutes: 60, notes: '' }; }
+describe('Recepción y organización', () => {
+  it('crea y enlaza las cuatro entidades sin mutar el estado anterior', () => {
+    const original = empty(); const s = receive(original);
+    expect(original.requests).toHaveLength(0); expect(s.requests).toHaveLength(1);
+    expect(s.requests[0].customer_id).toBe(s.customers[0].id);
+    expect(s.requests[0].vehicle_id).toBe(s.vehicles[0].id);
+    expect(s.requests[0].conversation_id).toBe(s.conversations[0].id);
+    expect(s.vehicles[0].plate).toBe('1234BCD');
+    expect(s.vehicles[0].workshop_id).toBe(s.workshop.id);
+  });
+  it('deduplica por teléfono y matrícula', () => {
+    const s = receive(receive(), { ...intake, phone: '600123456' });
+    expect(s.requests).toHaveLength(2); expect(s.customers).toHaveLength(1); expect(s.vehicles).toHaveLength(1);
+  });
+  it('admite varios vehículos por cliente', () => {
+    const s = receive(receive(), { ...intake, model: 'Ibiza', plate: '5678FGH' });
+    expect(s.customers).toHaveLength(1); expect(s.vehicles).toHaveLength(2);
+  });
+  it('es idempotente al reenviar el mismo identificador', () => {
+    const s = receive(); expect(receive(s, intake, s.requests[0].id).requests).toHaveLength(1);
+  });
+  it('rechaza una matrícula asociada a otro cliente sin dejar registros parciales', () => {
+    const s = receive();
+    expect(() => receive(s, { ...intake, name: 'Otra persona', phone: '611222333' })).toThrow('otro cliente');
+    expect(s.customers).toHaveLength(1);
+  });
+  it('valida los campos y acepta matrícula desconocida', () => {
+    expect(intakeSchema.safeParse({ ...intake, phone: 'hola' }).success).toBe(false);
+    expect(intakeSchema.safeParse({ ...intake, reason: '' }).success).toBe(false);
+    expect(receive(empty(), { ...intake, plate: '' }).vehicles[0].plate).toBe('');
+  });
+  it('extrae las respuestas guiadas y respeta omitir', async () => {
+    const values = ['María', '611222333', 'Toyota', 'Yaris', 'omitir', 'Cambio de aceite', 'Mañanas', 'omitir'];
+    const messages = questions.flatMap((q, i) => [{ role: 'assistant' as const, content: q.prompt }, { role: 'user' as const, content: values[i] }]);
+    const draft = await new MockReceptionProvider().extract(messages);
+    expect(draft.name).toBe('María'); expect(draft.plate).toBe(''); expect(draft.notes).toBe('');
+    expect(intakeSchema.safeParse(draft).success).toBe(true);
+  });
+});
+describe('Citas y estados', () => {
+  it('crea cita y actualiza solicitud', () => { const s = receive(); const next = applyCommand(s, appointment(s), now); expect(next.requests[0].status).toBe('cita_creada'); expect(next.appointments).toHaveLength(1); });
+  it('no permite citas pasadas ni duración inválida', () => {
+    const s = receive(); expect(() => applyCommand(s, appointment(s, '2020-01-01'), now)).toThrow('futuras');
+    const cmd = appointment(s); if (cmd.type === 'appointment') expect(() => applyCommand(s, { ...cmd, duration_minutes: -5 }, now)).toThrow('duración');
+  });
+  it('rechaza solapamientos pero permite horarios consecutivos', () => {
+    let s = receive(); s = applyCommand(s, appointment(s), now);
+    s = receive(s, { ...intake, phone: '600111222', plate: '9876ABC' });
+    expect(() => applyCommand(s, appointment(s, '2030-01-02T10:30:00Z'), now)).toThrow('coincide');
+    expect(applyCommand(s, appointment(s, '2030-01-02T11:00:00Z'), now).appointments).toHaveLength(2);
+  });
+  it('impide dos citas activas para una solicitud', () => { const s = receive(); const next = applyCommand(s, appointment(s), now); expect(() => applyCommand(next, appointment(next, '2030-01-03T10:00:00Z'), now)).toThrow('ya tiene'); });
+  it('completa la solicitud al completar la cita', () => { const s = receive(); const next = applyCommand(s, appointment(s), now); const done = applyCommand(next, { type: 'appointment_status', id: next.appointments[0].id, status: 'completed' }, now); expect(done.requests[0].status).toBe('completada'); });
+  it('devuelve la solicitud a pendiente al cancelar su cita', () => { const s = receive(); const next = applyCommand(s, appointment(s), now); const done = applyCommand(next, { type: 'appointment_status', id: next.appointments[0].id, status: 'cancelled' }, now); expect(done.requests[0].status).toBe('pendiente'); });
+  it('impide estados incoherentes y reabrir citas cerradas', () => {
+    const s = receive(); expect(() => applyCommand(s, { type: 'status', id: s.requests[0].id, status: 'cita_creada' }, now)).toThrow('primero');
+    const next = applyCommand(s, appointment(s), now); expect(() => applyCommand(next, { type: 'status', id: next.requests[0].id, status: 'completada' }, now)).toThrow('cita asociada');
+    const done = applyCommand(next, { type: 'appointment_status', id: next.appointments[0].id, status: 'cancelled' }, now);
+    expect(() => applyCommand(done, { type: 'appointment_status', id: done.appointments[0].id, status: 'scheduled' }, now)).toThrow('activa');
+  });
+  it('valida relaciones y duplicados en edición', () => {
+    const s = receive();
+    expect(() => applyCommand(s, { type: 'customer', customer: { ...s.customers[0], id: crypto.randomUUID() } }, now)).toThrow('teléfono');
+    expect(() => applyCommand(s, { type: 'vehicle', vehicle: { ...s.vehicles[0], workshop_id: crypto.randomUUID() } }, now)).toThrow('Revisa');
+  });
+});
