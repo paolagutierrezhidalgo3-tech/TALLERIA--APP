@@ -1,6 +1,6 @@
 # TALLERIA
 
-Recepción digital y gestión de clientes para talleres mecánicos pequeños y medianos. Primera iteración funcional: **conversación simulada → revisión de datos → solicitud → cliente y vehículo → cita**.
+Recepción digital y gestión de clientes para talleres mecánicos pequeños y medianos. Segunda iteración funcional: **conversación simulada → revisión de datos → solicitud → cliente y vehículo → cita**.
 
 ## Probar en tu ordenador
 
@@ -29,7 +29,7 @@ Los cambios demo se guardan en este navegador con localStorage. Utiliza datos fi
 7. En **Clientes** y **Vehículos**, crea o edita registros. En **Configuración**, cambia los datos del taller.
 8. Recarga para comprobar que tus cambios demo permanecen.
 
-Las coincidencias de teléfono reutilizan clientes. La matrícula evita duplicar vehículos y avisa si pertenece a otra persona. Una solicitud tiene como máximo una cita activa. Se impiden citas solapadas; el MVP contempla una sola capacidad simultánea por taller.
+Las coincidencias de teléfono reutilizan clientes. La matrícula evita duplicar vehículos y avisa si pertenece a otra persona. Una solicitud tiene como máximo una cita activa. Cada cita ocupa un recurso del taller. Un mismo recurso no admite solapamientos; recursos diferentes sí. Configura puestos, mecánicos o elevadores en Configuración. Prueba owner/staff con el selector demo.
 
 ## Tecnología y estructura
 
@@ -56,7 +56,7 @@ Consulta [la arquitectura](docs/architecture.md) para conocer las relaciones, de
 El desarrollo y la demo funcionan sin este paso.
 
 1. Crea o selecciona un proyecto de Supabase. No necesitas contratar un plan de pago para probar.
-2. Ejecuta **una vez** `supabase/migrations/202609200001_initial.sql` en su SQL Editor, sobre un proyecto nuevo. También puedes aplicar la migración con la CLI de Supabase.
+2. Aplica las tres migraciones de `supabase/migrations` en orden (001, 002 y 003). Si la inicial ya está aplicada, ejecuta solo 002 y 003. Consulta [la guía de actualización](docs/iteration-2.md) y realiza una copia de seguridad antes de migrar datos reales.
 3. Copia `.env.example` a `.env.local` y configura:
    - `NEXT_PUBLIC_DATA_MODE=supabase`
    - `NEXT_PUBLIC_SUPABASE_URL`: URL del proyecto.
@@ -85,7 +85,7 @@ pnpm build
 pnpm start
 ```
 
-Las pruebas de dominio verifican deduplicación, enlaces, idempotencia, conflictos de matrículas, horarios y transiciones de estados. También se ejecuta la migración en PostgreSQL embebido (PGlite) para verificar permisos, aislamiento y atomicidad, sin credenciales ni conexión a Supabase. Son 21 pruebas en total. Los pasos de prueba manual están arriba.
+Las pruebas de dominio verifican deduplicación, enlaces, idempotencia, conflictos de matrículas, horarios y transiciones de estados. También se ejecuta la migración en PostgreSQL embebido (PGlite) para verificar permisos, aislamiento y atomicidad, sin credenciales ni conexión a Supabase. Incluyen las reglas de la segunda iteración y migración de datos anteriores. Los pasos de prueba manual están arriba.
 
 ## Desplegar en Vercel
 
@@ -96,8 +96,10 @@ Sin variables tendrás la demo. Para el modo real configura las tres variables a
 ## Pendiente antes de usarlo con clientes reales
 
 - Verificar el proyecto Supabase real y el aislamiento entre cuentas con sus credenciales configuradas.
-- Recuperación de contraseña, invitaciones y permisos diferenciados del equipo.
-- Paginación, sincronización realtime y auditoría completa.
-- Horarios estructurados, capacidad por mecánico/puesto y recordatorios.
+- Recuperación de contraseña e invitaciones (owner/staff ya tienen permisos diferenciados).
+- Sincronización realtime y políticas de retención (ya hay paginación y auditoría básica).
+- Horarios estructurados y recordatorios (ya hay capacidad por recurso).
 - Política de privacidad, consentimiento y gestión de retención/borrado.
 - Canales reales y proveedor IA, con autenticación de eventos, límites e idempotencia.
+
+Consulta [las decisiones y configuración de la segunda iteración](docs/iteration-2.md).
