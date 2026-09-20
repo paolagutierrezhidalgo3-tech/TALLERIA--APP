@@ -1,25 +1,27 @@
 import type { WorkshopRepository } from '../repository';
-import { applyCommand, type Command, type State, type Workshop } from '../domain';
+import type { Command, State } from '../domain';
+import { defaultQuery, type LookupOption, type ViewQuery } from '../queries';
+import { databaseMessage } from '../security';
 import { getSupabase } from './client';
-
 export class SupabaseRepository implements WorkshopRepository {
+  private query: ViewQuery = defaultQuery;
   constructor(private workshopId: string) {}
-  async load(): Promise<State> {
-    const db = getSupabase();
-    const workshop = await db.from('workshops').select('*').eq('id', this.workshopId).single();
-    if (workshop.error) throw new Error(workshop.error.message);
-    const tables = ['customers', 'vehicles', 'conversations', 'requests', 'appointments'] as const;
-    const rows = await Promise.all(tables.map(table => db.from(table).select('*').eq('workshop_id', this.workshopId)));
-    for (const row of rows) if (row.error) throw new Error(row.error.message);
-    const state = { workshop: workshop.data as Workshop, ...Object.fromEntries(tables.map((table, i) => [table, rows[i].data])) } as State;
-    state.requests.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    return state;
+  async load(query = this.query): Promise<State> {
+    this.query = query;
+    const {data,error}=await getSupabase().rpc('workspace_snapshot',{p_workshop_id:this.workshopId,p_view:query.view,p_offset:query.offset,p_search:query.search.slice(0,120),p_status:query.status});
+    if(error) throw new Error(databaseMessage(error));
+    return data as State;
   }
   async execute(command: Command): Promise<State> {
-    // Early friendly validation; PostgreSQL validates again inside a transaction.
-    applyCommand(await this.load(), command);
-    const { error } = await getSupabase().rpc('execute_command', { p_workshop_id: this.workshopId, p_command: command });
-    if (error) throw new Error(error.message);
+    // A paginated snapshot is not authoritative for uniqueness or scheduling.
+    // PostgreSQL validates and commits; refresh exactly one current view afterward.
+    const {error}=await getSupabase().rpc('execute_command',{p_workshop_id:this.workshopId,p_command:command});
+    if(error) throw new Error(databaseMessage(error));
     return this.load();
+  }
+  async lookup(kind:'customer'|'request',search:string):Promise<LookupOption[]> {
+    const {data,error}=await getSupabase().rpc('lookup_options',{p_workshop_id:this.workshopId,p_kind:kind,p_search:search.slice(0,120)});
+    if(error) throw new Error(databaseMessage(error));
+    return data as LookupOption[];
   }
 }
