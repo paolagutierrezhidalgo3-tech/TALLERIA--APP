@@ -13,10 +13,10 @@ async function execute(workshop: string, command: unknown) { await db.query('sel
 function intake(phone = '611222333', plate = '1234BCD') { return { type: 'intake', id: crypto.randomUUID(), data: { name: 'Persona Prueba', phone, brand: 'SEAT', model: 'León', plate, reason: 'Revisión de mantenimiento', availability: 'Mañanas', notes: '' }, messages: [{ role: 'user', content: 'Quiero una revisión' }] }; }
 beforeAll(async () => {
   await db.exec(`create role anon; create role authenticated;
-    create schema auth; create table auth.users(id uuid primary key);
+    create schema auth; create table auth.users(id uuid primary key, email text unique default (gen_random_uuid()::text || '@example.invalid'));
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     grant usage on schema auth to authenticated, anon;
-    insert into auth.users values ('${userA}'),('${userB}'),('10000000-0000-4000-8000-000000000004');`);
+    insert into auth.users(id) values ('${userA}'),('${userB}'),('10000000-0000-4000-8000-000000000004');`);
   await db.exec(readFileSync('supabase/migrations/202609200001_initial.sql', 'utf8'));
   await asUser('10000000-0000-4000-8000-000000000004');
   legacyWorkshop=(await db.query<{id:string}>("select public.create_workshop('Taller heredado') id")).rows[0].id;
@@ -86,7 +86,7 @@ describe('PostgreSQL: nuevas reglas de negocio',()=>{
  it('deduplica clientes con prefijo y corrige la descripción de una matrícula revisada',async()=>{await asUser(userA);const cmd=intake('+34 611222333');cmd.data.model='Ibiza';await execute(workshopA,cmd);expect((await db.query('select * from public.customers')).rows).toHaveLength(1);expect((await db.query<{model:string}>('select model from public.vehicles')).rows[0].model).toBe('Ibiza');expect((await db.query("select * from public.audit_events where action='vehicle_corrected'")).rows).toHaveLength(1);});
  it('controla duplicados, datos inválidos y ediciones obsoletas sin errores SQL crudos',async()=>{await asUser(userA);const customer=(await db.query<Record<string,unknown>>('select * from public.customers limit 1')).rows[0];await expect(execute(workshopA,{type:'customer',customer:{...customer,id:crypto.randomUUID()}})).rejects.toMatchObject({code:'P0001',message:expect.stringContaining('teléfono')});await execute(workshopA,{type:'customer',customer:{...customer,name:'Nombre actualizado'}});await expect(execute(workshopA,{type:'customer',customer})).rejects.toMatchObject({code:'P0001',message:expect.stringContaining('ha cambiado')});await expect(execute(workshopA,{type:'vehicle',vehicle:{id:crypto.randomUUID(),workshop_id:workshopA,customer_id:crypto.randomUUID(),brand:'Ford',model:'Fiesta',plate:''}})).rejects.toMatchObject({code:'P0001',message:expect.stringContaining('cliente')});const workshop=(await db.query<Record<string,unknown>>('select * from public.workshops')).rows[0];await expect(execute(workshopA,{type:'settings',workshop:{...workshop,appointment_minutes:0}})).rejects.toMatchObject({code:'P0001'});await execute(workshopA,{type:'settings',workshop});await expect(execute(workshopA,{type:'settings',workshop})).rejects.toThrow('ha cambiado');});
  it('permite concurrencia entre recursos y protege el recurso ocupado',async()=>{await asUser(userA);const resource=(await db.query<Record<string,unknown>>('select * from public.resources')).rows[0];const second={...resource,id:crypto.randomUUID(),name:'Elevador 2',kind:'lift'};await execute(workshopA,{type:'resource',resource:second});await execute(workshopA,intake());const requests=(await db.query<{id:string}>("select id from public.requests where status='nueva'")).rows;const cmd={type:'appointment',request_version:1,id:crypto.randomUUID(),request_id:requests[0].id,resource_id:resource.id,starts_at:new Date(Date.now()+172800000).toISOString(),duration_minutes:60,notes:''};await execute(workshopA,cmd);await expect(execute(workshopA,{...cmd,id:crypto.randomUUID(),request_id:requests[1].id})).rejects.toThrow('coincide');await execute(workshopA,{...cmd,id:crypto.randomUUID(),request_id:requests[1].id,resource_id:second.id});await expect(execute(workshopA,{type:'resource',resource:{...resource,active:false}})).rejects.toThrow('citas');await expect(execute(workshopA,{type:'resource',resource:{...second,name:'Puesto principal'}})).rejects.toThrow('nombre');});
- it('staff no modifica administración ni ve auditoría, pero sí gestiona clientes',async()=>{const staff='10000000-0000-4000-8000-000000000003';await db.exec('reset role');await db.query('insert into auth.users values($1)',[staff]);await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')",[workshopA,staff]);await asUser(staff);const workshop=(await db.query<Record<string,unknown>>('select * from public.workshops')).rows[0];const resource=(await db.query<Record<string,unknown>>('select * from public.resources limit 1')).rows[0];await expect(execute(workshopA,{type:'settings',workshop})).rejects.toThrow('propietario');await expect(execute(workshopA,{type:'resource',resource})).rejects.toThrow('propietario');expect((await db.query('select * from public.audit_events')).rows).toHaveLength(0);await expect(db.query("update public.workshops set name='Intruso'")).rejects.toThrow();const customer=(await db.query<Record<string,unknown>>('select * from public.customers limit 1')).rows[0];await execute(workshopA,{type:'customer',customer:{...customer,notes:'Gestionado por staff'}});await asUser(userA);expect((await db.query<{user_id:string}>("select user_id from public.audit_events where action='customer' order by created_at desc limit 1")).rows[0].user_id).toBe(staff);});
+ it('staff no modifica administración ni ve auditoría, pero sí gestiona clientes',async()=>{const staff='10000000-0000-4000-8000-000000000003';await db.exec('reset role');await db.query('insert into auth.users(id) values($1)',[staff]);await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')",[workshopA,staff]);await asUser(staff);const workshop=(await db.query<Record<string,unknown>>('select * from public.workshops')).rows[0];const resource=(await db.query<Record<string,unknown>>('select * from public.resources limit 1')).rows[0];await expect(execute(workshopA,{type:'settings',workshop})).rejects.toThrow('propietario');await expect(execute(workshopA,{type:'resource',resource})).rejects.toThrow('propietario');expect((await db.query('select * from public.audit_events')).rows).toHaveLength(0);await expect(db.query("update public.workshops set name='Intruso'")).rejects.toThrow();const customer=(await db.query<Record<string,unknown>>('select * from public.customers limit 1')).rows[0];await execute(workshopA,{type:'customer',customer:{...customer,notes:'Gestionado por staff'}});await asUser(userA);expect((await db.query<{user_id:string}>("select user_id from public.audit_events where action='customer' order by created_at desc limit 1")).rows[0].user_id).toBe(staff);});
  it('devuelve páginas acotadas y busca registros antiguos sin cargarlos todos',async()=>{await db.exec('reset role');for(let i=0;i<31;i++)await db.query("insert into public.customers(workshop_id,name,phone,phone_e164) values($1,$2,$3,$3)",[workshopB,'Cliente '+String(i).padStart(3,'0'),'+34610000'+String(i).padStart(3,'0')]);await asUser(userB);const snapshot=async(offset:number,search='')=>(await db.query<{s:{customers:unknown[];page_info:{total:number;ids:string[]}}}>("select public.workspace_snapshot($1,'customers',$2,$3) s",[workshopB,offset,search])).rows[0].s;const first=await snapshot(0),second=await snapshot(25);expect(first.customers).toHaveLength(25);expect(second.customers).toHaveLength(6);expect(first.page_info.total).toBe(31);expect(await snapshot(0,'030')).toMatchObject({page_info:{total:1}});const options=(await db.query<{o:unknown[]}>("select public.lookup_options($1,'customer','') o",[workshopB])).rows[0].o;expect(options).toHaveLength(20);await expect(db.query("select public.workspace_snapshot($1)",[workshopA])).rejects.toThrow('acceso');await expect(db.query("select public.lookup_options($1,'customer','')",[workshopA])).rejects.toThrow('acceso');});
  it('limita operaciones repetitivas sin duplicar auditoría en reintentos',async()=>{await asUser(userA);const cmd=intake();await execute(workshopA,cmd);const count=async()=>Number((await db.query<{n:string}>('select count(*) n from public.audit_events')).rows[0].n);const before=await count();await execute(workshopA,cmd);expect(await count()).toBe(before);await db.exec('reset role');await db.query("insert into public.audit_events(workshop_id,user_id,action,entity_type,entity_id) select $1,$2,'customer','customer',gen_random_uuid() from generate_series(1,100)",[workshopA,userA]);await asUser(userA);await expect(execute(workshopA,{type:'status',id:cmd.id,status:'pendiente'})).rejects.toThrow('demasiadas');expect(await count()).toBe(before+100);});
 });
@@ -97,10 +97,206 @@ describe('Actualización de datos de la primera iteración',()=>{
 
 describe('Mini-iteración: búsquedas y dos usuarios con la misma versión',()=>{
  const owner='10000000-0000-4000-8000-000000000005',staff='10000000-0000-4000-8000-000000000006';let workshop:string;
- beforeAll(async()=>{await db.exec('reset role');await db.query('insert into auth.users values($1),($2)',[owner,staff]);await asUser(owner);workshop=(await db.query<{id:string}>("select public.create_workshop('Taller concurrencia') id")).rows[0].id;await db.exec('reset role');await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')",[workshop,staff]);});
+ beforeAll(async()=>{await db.exec('reset role');await db.query('insert into auth.users(id) values($1),($2)',[owner,staff]);await asUser(owner);workshop=(await db.query<{id:string}>("select public.create_workshop('Taller concurrencia') id")).rows[0].id;await db.exec('reset role');await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')",[workshop,staff]);});
  async function request(){await asUser(owner);const c=intake('600333222','7777BCD');c.data.name='José García Martín';c.data.model='León';c.data.reason='Revisión en León';c.messages=[{role:'user',content:'Revisión en León'}];await execute(workshop,c);return c.id;}
  it('busca sin tildes en listas y selectores, con Unicode compuesto y descompuesto',async()=>{await request();for(const [view,search] of [['customers','garcia'],['customers','martin'],['vehicles','leon'],['requests','revision'],['conversations','leon']]){const s=(await db.query<{s:{page_info:{total:number}}}>('select public.workspace_snapshot($1,$2,0,$3) s',[workshop,view,search])).rows[0].s;expect(s.page_info.total).toBe(1);}for(const [kind,search] of [['customer','GARCIA'],['request','revisión']])expect((await db.query<{o:unknown[]}>('select public.lookup_options($1,$2,$3) o',[workshop,kind,search])).rows[0].o).toHaveLength(1);for(const name of ['León','Leo\u0301n','LEÓN'])expect((await db.query<{s:string}>('select public.search_text($1) s',[name])).rows[0].s).toBe('leon');});
  it('rechaza un cambio de estado del segundo usuario y conserva el primer guardado',async()=>{const id=await request();await execute(workshop,{type:'status',id,version:1,status:'pendiente'});await asUser(staff);await expect(execute(workshop,{type:'status',id,version:1,status:'en_proceso'})).rejects.toMatchObject({code:'P0001',message:expect.stringContaining('ha cambiado')});expect((await db.query<{version:number;status:string}>('select version,status from public.requests where id=$1',[id])).rows[0]).toEqual({version:2,status:'pendiente'});await asUser(owner);expect((await db.query("select * from public.audit_events where entity_id=$1 and action='status'",[id])).rows).toHaveLength(1);});
  it('rechaza reprogramaciones y cancelaciones obsoletas y permite guardar tras refrescar',async()=>{const rid=await request();const id=crypto.randomUUID();const cmd={type:'appointment',id,request_id:rid,request_version:1,starts_at:'2035-01-02T10:00:00Z',duration_minutes:60,notes:''};await execute(workshop,cmd);await asUser(staff);await execute(workshop,{...cmd,version:1,request_version:2,starts_at:'2035-01-03T10:00:00Z'});await asUser(owner);await expect(execute(workshop,{...cmd,version:1,request_version:3})).rejects.toThrow('ha cambiado');await expect(execute(workshop,{type:'appointment_status',id,version:1,request_version:3,status:'cancelled'})).rejects.toThrow('ha cambiado');await expect(execute(workshop,{type:'appointment_status',id,version:2,request_version:2,status:'completed'})).rejects.toThrow('ha cambiado');expect((await db.query<{version:number;status:string}>('select version,status from public.appointments where id=$1',[id])).rows[0]).toEqual({version:2,status:'scheduled'});await execute(workshop,{type:'appointment_status',id,version:2,request_version:3,status:'completed'});expect((await db.query<{version:number;status:string}>('select version,status from public.requests where id=$1',[rid])).rows[0]).toEqual({version:4,status:'completada'});expect((await db.query<{version:number}>('select version from public.appointments where id=$1',[id])).rows[0].version).toBe(3);});
  it('no admite omitir versiones ni reservar desde una solicitud obsoleta',async()=>{const rid=await request();await expect(execute(workshop,{type:'status',id:rid,status:'pendiente'})).rejects.toThrow('ha cambiado');await execute(workshop,{type:'status',id:rid,version:1,status:'pendiente'});const cmd={type:'appointment',id:crypto.randomUUID(),request_id:rid,starts_at:'2035-02-01T10:00:00Z',duration_minutes:60,notes:''};await expect(execute(workshop,cmd)).rejects.toThrow('ha cambiado');await expect(execute(workshop,{...cmd,request_version:1})).rejects.toThrow('ha cambiado');await execute(workshop,{...cmd,request_version:2});await expect(execute(workshop,{...cmd,request_version:3})).rejects.toThrow('ha cambiado');await expect(execute(workshop,{type:'appointment_status',id:cmd.id,request_version:3,status:'cancelled'})).rejects.toThrow('ha cambiado');});
+});
+
+describe('Equipo: invitaciones y gestión de miembros', () => {
+  const owner = '10000000-0000-4000-8000-000000000010', ownerEmail = 'owner10@example.com';
+  const staffUser = '10000000-0000-4000-8000-000000000011', staffEmail = 'staff11@example.com';
+  const alreadyMember = '10000000-0000-4000-8000-000000000012', alreadyMemberEmail = 'already12@example.com';
+  const stranger = '10000000-0000-4000-8000-000000000013', strangerEmail = 'stranger13@example.com';
+  let workshop: string, otherWorkshop: string, invitationId: string, pendingForStranger: string;
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2),($3,$4),($5,$6),($7,$8)', [owner, ownerEmail, staffUser, staffEmail, alreadyMember, alreadyMemberEmail, stranger, strangerEmail]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller equipo') id")).rows[0].id;
+    await db.exec('reset role');
+    otherWorkshop = (await db.query<{ id: string }>("insert into public.workshops(name) values('Otro taller') returning id")).rows[0].id;
+    await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'owner')", [otherWorkshop, alreadyMember]);
+  });
+  it('el propietario invita, y reinvitar el mismo correo no duplica la fila pendiente', async () => {
+    await asUser(owner);
+    invitationId = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, staffEmail])).rows[0].id;
+    const again = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, staffEmail.toUpperCase()])).rows[0].id;
+    expect(again).toBe(invitationId);
+    expect((await db.query('select * from public.workshop_invitations where workshop_id=$1', [workshop])).rows).toHaveLength(1);
+  });
+  it('invite_member bloquea el taller con FOR NO KEY UPDATE, no FOR UPDATE, para no interbloquearse con accept_invitation', () => {
+    // A genuine cross-transaction deadlock isn't reproducible with PGlite: a
+    // single instance fully serializes .transaction() calls end-to-end (no
+    // real interleaving), and two separate instances sharing a directory
+    // don't share real transactional/lock state at all (verified manually: a
+    // concurrent FOR UPDATE from a second instance didn't block, and a write
+    // was silently lost — unsafe for testing). So this pins the fix at the
+    // source level instead of behaviorally: FOR UPDATE here would conflict
+    // with the FOR KEY SHARE lock Postgres takes on this same workshops row
+    // to satisfy accept_invitation's workshop_members foreign-key check,
+    // which -- while accept_invitation also holds its own invitation row
+    // lock that this function's upsert waits on -- forms a lock-order cycle
+    // Postgres's deadlock detector resolves by aborting one side.
+    const sql = readFileSync('supabase/migrations/202609210005_team_management.sql', 'utf8');
+    const fn = sql.slice(sql.indexOf('create function public.invite_member'), sql.indexOf('create function public.revoke_invitation'));
+    expect(fn).toMatch(/from public\.workshops where id = p_workshop_id for no key update/);
+    expect(fn).not.toMatch(/from public\.workshops where id = p_workshop_id for update\b/);
+  });
+  it('rechaza correo inválido, correo ya miembro del taller y correo que ya pertenece a otro taller', async () => {
+    await asUser(owner);
+    await expect(db.query('select public.invite_member($1,$2)', [workshop, 'no-es-un-correo'])).rejects.toThrow('correo válido');
+    await expect(db.query('select public.invite_member($1,$2)', [workshop, ownerEmail])).rejects.toThrow('ya pertenece a un miembro');
+    await expect(db.query('select public.invite_member($1,$2)', [workshop, alreadyMemberEmail])).rejects.toThrow('ya pertenece a otro taller');
+  });
+  it('solo el propietario puede invitar, y list_members no expone invitaciones a quien no es owner', async () => {
+    await db.exec('reset role');
+    await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')", [workshop, stranger]);
+    await asUser(stranger);
+    await expect(db.query('select public.invite_member($1,$2)', [workshop, 'x@example.com'])).rejects.toThrow('propietario');
+    const snapshot = (await db.query<{ s: { members: unknown[]; invitations: unknown[] } }>('select public.list_members($1) s', [workshop])).rows[0].s;
+    expect(snapshot.invitations).toHaveLength(0);
+    expect(snapshot.members.length).toBeGreaterThan(0);
+    await db.exec('reset role');
+    await db.query('delete from public.workshop_members where workshop_id=$1 and user_id=$2', [workshop, stranger]);
+  });
+  it('un correo distinto al invitado no puede aceptar la invitación (protección contra manipular IDs)', async () => {
+    await asUser(stranger);
+    await expect(db.query('select public.accept_invitation($1)', [invitationId])).rejects.toThrow('otro correo');
+    expect((await db.query('select * from public.workshop_members where user_id=$1', [stranger])).rows).toHaveLength(0);
+  });
+  it('una cuenta sin correo verificado no puede aceptar ninguna invitación', async () => {
+    // NULL v_email must be rejected explicitly: `lower(NULL) <> inv.email`
+    // evaluates to NULL, which `if` treats as false and would otherwise let
+    // an emailless account silently accept anyone's pending invitation.
+    const nullEmailUser = '10000000-0000-4000-8000-000000000015';
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,null)', [nullEmailUser]);
+    await asUser(nullEmailUser);
+    await expect(db.query('select public.accept_invitation($1)', [invitationId])).rejects.toThrow('otro correo');
+    await db.exec('reset role');
+    expect((await db.query('select * from public.workshop_members where workshop_id=$1 and user_id=$2', [workshop, nullEmailUser])).rows).toHaveLength(0);
+  });
+  it('el correo invitado acepta correctamente y queda como staff', async () => {
+    await asUser(staffUser);
+    const result = (await db.query<{ id: string }>('select public.accept_invitation($1) id', [invitationId])).rows[0].id;
+    expect(result).toBe(workshop);
+    expect((await db.query<{ role: string }>('select role from public.workshop_members where workshop_id=$1 and user_id=$2', [workshop, staffUser])).rows[0].role).toBe('staff');
+    await asUser(owner);
+    expect((await db.query<{ status: string }>('select status from public.workshop_invitations where id=$1', [invitationId])).rows[0].status).toBe('accepted');
+  });
+  it('no se puede aceptar dos veces, ni una invitación cancelada, ni una caducada', async () => {
+    await asUser(staffUser);
+    await expect(db.query('select public.accept_invitation($1)', [invitationId])).rejects.toThrow('no está disponible');
+    await asUser(owner);
+    const revokedId = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, 'revocada@example.com'])).rows[0].id;
+    await db.query('select public.revoke_invitation($1)', [revokedId]);
+    await expect(db.query('select public.accept_invitation($1)', [revokedId])).rejects.toThrow('no está disponible');
+    const expiredId = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, strangerEmail])).rows[0].id;
+    await db.exec('reset role');
+    await db.query("update public.workshop_invitations set expires_at=now()-interval '1 day' where id=$1", [expiredId]);
+    await asUser(stranger);
+    await expect(db.query('select public.accept_invitation($1)', [expiredId])).rejects.toThrow('caducado');
+    await asUser(owner);
+    const snapshot = (await db.query<{ s: { invitations: { id: string }[] } }>('select public.list_members($1) s', [workshop])).rows[0].s;
+    expect(snapshot.invitations.some(i => i.id === expiredId)).toBe(false);
+  });
+  it('un usuario que ya pertenece a un taller no puede aceptar otra invitación', async () => {
+    await asUser(owner);
+    pendingForStranger = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, strangerEmail])).rows[0].id;
+    await asUser(stranger);
+    await db.query("select public.create_workshop('Taller propio de stranger')");
+    await expect(db.query('select public.accept_invitation($1)', [pendingForStranger])).rejects.toThrow('ya pertenece a un taller');
+  });
+  it('el propietario ve el equipo y las invitaciones pendientes de su taller, pero no las de otro', async () => {
+    await asUser(owner);
+    const snapshot = (await db.query<{ s: { members: { user_id: string; role: string }[] } }>('select public.list_members($1) s', [workshop])).rows[0].s;
+    expect(snapshot.members.find(m => m.user_id === staffUser)?.role).toBe('staff');
+    expect(snapshot.members.find(m => m.user_id === owner)?.role).toBe('owner');
+    await asUser(alreadyMember);
+    const foreignInvite = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [otherWorkshop, 'ajeno@example.com'])).rows[0].id;
+    await asUser(owner);
+    expect((await db.query('select * from public.workshop_invitations where id=$1', [foreignInvite])).rows).toHaveLength(0);
+  });
+  it('my_pending_invitation solo ve la invitación de su propio correo, y decline la retira', async () => {
+    await asUser(alreadyMember);
+    expect((await db.query<{ s: unknown }>('select public.my_pending_invitation() s')).rows[0].s).toBeNull();
+    await asUser(stranger);
+    const pending = (await db.query<{ s: { id: string; workshop_name: string } }>('select public.my_pending_invitation() s')).rows[0].s;
+    expect(pending).toMatchObject({ id: pendingForStranger, workshop_name: 'Taller equipo' });
+    await db.query('select public.decline_invitation($1)', [pendingForStranger]);
+    expect((await db.query<{ s: unknown }>('select public.my_pending_invitation() s')).rows[0].s).toBeNull();
+    await asUser(owner);
+    expect((await db.query<{ status: string }>('select status from public.workshop_invitations where id=$1', [pendingForStranger])).rows[0].status).toBe('revoked');
+  });
+  it('el propietario retira a un miembro staff; staff no puede retirar a nadie ni al propietario', async () => {
+    await asUser(staffUser);
+    await expect(db.query('select public.remove_member($1,$2)', [workshop, owner])).rejects.toThrow('propietario');
+    await asUser(owner);
+    await expect(db.query('select public.remove_member($1,$2)', [workshop, owner])).rejects.toThrow('propietario del taller');
+    await db.query('select public.remove_member($1,$2)', [workshop, staffUser]);
+    expect((await db.query('select * from public.workshop_members where workshop_id=$1 and user_id=$2', [workshop, staffUser])).rows).toHaveLength(0);
+    await asUser(staffUser);
+    expect((await db.query('select * from public.workshops where id=$1', [workshop])).rows).toHaveLength(0);
+  });
+  it('revocar una invitación que ya fue aceptada no deshace la pertenencia (ventana de carrera aceptación/revocación)', async () => {
+    // PGlite runs a single serialized connection, so the literal interleaving
+    // (revoke reads 'pending' right before accept commits) can't be replayed
+    // here; instead this drives both calls in the order the race produces —
+    // acceptance wins first — and checks revoke_invitation now refuses to
+    // clobber it, which is exactly the invariant the row lock in the fixed
+    // function guarantees regardless of timing.
+    const racer = '10000000-0000-4000-8000-000000000014', racerEmail = 'race14@example.com';
+    await asUser(owner);
+    const raceId = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, racerEmail])).rows[0].id;
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2)', [racer, racerEmail]);
+    await asUser(racer);
+    await db.query('select public.accept_invitation($1)', [raceId]);
+    await asUser(owner);
+    await expect(db.query('select public.revoke_invitation($1)', [raceId])).rejects.toThrow('ya se unió');
+    expect((await db.query<{ status: string }>('select status from public.workshop_invitations where id=$1', [raceId])).rows[0].status).toBe('accepted');
+    expect((await db.query("select * from public.audit_events where entity_id=$1 and action='invitation_revoked'", [raceId])).rows).toHaveLength(0);
+    // own_membership RLS only lets a user see their own row, so check racer's
+    // membership survived with the admin (reset role) connection, not owner's.
+    await db.exec('reset role');
+    expect((await db.query('select * from public.workshop_members where workshop_id=$1 and user_id=$2', [workshop, racer])).rows).toHaveLength(1);
+  });
+  it('el límite de 20 miembros también se aplica al aceptar invitaciones, no solo al invitar (evita superar el cupo con aceptaciones concurrentes)', async () => {
+    // A workshop can validly issue invitations while under the cap and still
+    // exceed it if acceptance never re-checks the count: invite 19 members,
+    // then two invitations, accept the first (hits 20), and confirm the
+    // second acceptance is rejected instead of pushing the workshop to 21 —
+    // whether that second accept arrives sequentially or racing the first.
+    const uid = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const capOwner = uid(90);
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2)', [capOwner, 'capowner90@example.com']);
+    await asUser(capOwner);
+    const capWorkshop = (await db.query<{ id: string }>("select public.create_workshop('Taller al límite') id")).rows[0].id;
+    await db.exec('reset role');
+    for (let i = 0; i < 18; i++) {
+      const fillerId = uid(91 + i);
+      await db.query('insert into auth.users(id) values($1)', [fillerId]);
+      await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')", [capWorkshop, fillerId]);
+    }
+    const firstInvitee = uid(109), secondInvitee = uid(110);
+    await db.query('insert into auth.users(id,email) values($1,$2),($3,$4)', [firstInvitee, 'cap-first@example.com', secondInvitee, 'cap-second@example.com']);
+    await asUser(capOwner);
+    const firstInv = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [capWorkshop, 'cap-first@example.com'])).rows[0].id;
+    const secondInv = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [capWorkshop, 'cap-second@example.com'])).rows[0].id;
+    // own_membership RLS only lets a caller see their own row, so count via
+    // the admin (reset role) connection rather than whichever user is active.
+    const memberCount = async () => { await db.exec('reset role'); return Number((await db.query<{ n: string }>('select count(*) n from public.workshop_members where workshop_id=$1', [capWorkshop])).rows[0].n); };
+    await asUser(firstInvitee);
+    await db.query('select public.accept_invitation($1)', [firstInv]);
+    expect(await memberCount()).toBe(20);
+    await asUser(secondInvitee);
+    await expect(db.query('select public.accept_invitation($1)', [secondInv])).rejects.toThrow('admite hasta 20 miembros');
+    expect(await memberCount()).toBe(20);
+    await db.exec('reset role');
+    expect((await db.query('select * from public.workshop_members where workshop_id=$1 and user_id=$2', [capWorkshop, secondInvitee])).rows).toHaveLength(0);
+  });
 });
