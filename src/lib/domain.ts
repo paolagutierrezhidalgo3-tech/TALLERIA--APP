@@ -37,6 +37,13 @@ export type Command =
   | { type: 'settings'; workshop: Workshop }
   | { type: 'resource'; resource: Resource };
 
+// A workshop with no customers and no requests yet has nothing for the
+// dashboard to show; the caller uses this to switch to a first-run guide
+// instead of an empty metrics grid and empty-state messages everywhere.
+export function isWorkshopEmpty(state: State): boolean {
+  return state.customers.length === 0 && state.requests.length === 0;
+}
+
 export function applyCommand(current: State, command: Command, now = new Date()): State {
   const s = structuredClone(current);
   const workshop_id = s.workshop.id;

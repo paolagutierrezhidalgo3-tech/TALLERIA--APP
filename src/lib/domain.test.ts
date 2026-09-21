@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCommand, intakeSchema, type Command, type Intake, type State } from './domain';
+import { applyCommand, intakeSchema, isWorkshopEmpty, type Command, type Intake, type State } from './domain';
 import { MockReceptionProvider, questions } from './reception/provider';
 const now = new Date('2030-01-01T08:00:00Z');
 const intake: Intake = { name: 'Cliente Prueba', phone: '600 123 456', brand: 'SEAT', model: 'León', plate: '1234 bcd', reason: 'Revisión anual', availability: 'Mañanas', notes: '' };
@@ -70,5 +70,18 @@ describe('Citas y estados', () => {
     const s = receive();
     expect(() => applyCommand(s, { type: 'customer', customer: { ...s.customers[0], id: crypto.randomUUID() } }, now)).toThrow('teléfono');
     expect(() => applyCommand(s, { type: 'vehicle', vehicle: { ...s.vehicles[0], workshop_id: crypto.randomUUID() } }, now)).toThrow('Revisa');
+  });
+});
+describe('Arranque de un taller nuevo', () => {
+  it('un taller recién creado, sin clientes ni solicitudes, cuenta como vacío', () => {
+    expect(isWorkshopEmpty(empty())).toBe(true);
+  });
+  it('deja de ser vacío en cuanto hay una solicitud (y por tanto un cliente)', () => {
+    expect(isWorkshopEmpty(receive())).toBe(false);
+  });
+  it('un cliente sin solicitudes todavía también cuenta como no-vacío', () => {
+    const s = receive();
+    const onlyCustomer: State = { ...empty(), customers: s.customers };
+    expect(isWorkshopEmpty(onlyCustomer)).toBe(false);
   });
 });
