@@ -8,8 +8,8 @@ export interface WorkshopRepository {
   execute(command: Command): Promise<State>;
   lookup(kind: 'customer' | 'request', search: string): Promise<LookupOption[]>;
 }
-const KEY = 'talleria.demo.v2';
-const LEGACY = 'talleria.demo.v1';
+export const KEY = 'talleria.demo.v2';
+export const LEGACY = 'talleria.demo.v1';
 export class DemoRepository implements WorkshopRepository {
   private query: ViewQuery = defaultQuery;
   constructor(private role: 'owner' | 'staff' = 'owner') {}
@@ -21,7 +21,7 @@ export class DemoRepository implements WorkshopRepository {
       try {
         state = JSON.parse(saved) as State;
         if (!state.workshop?.id || !Array.isArray(state.customers) || !Array.isArray(state.requests) || !Array.isArray(state.vehicles) || !Array.isArray(state.conversations) || !Array.isArray(state.appointments)) throw new Error();
-        upgraded = state.schema_version !== 3;
+        upgraded = state.schema_version !== 4;
         state = upgradeDemo(state);
       } catch { throw new Error('Los datos demo guardados no se pueden leer. Usa «Restablecer demo» para recuperarlos.'); }
     } else state = upgradeDemo(createDemo());

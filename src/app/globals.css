@@ -12,3 +12,7 @@
 /* Keep visually hidden table headings inside the horizontal scroll container. */
 .table-wrap{position:relative}
 
+/* The public reception form reuses .auth-form, whose 540px max-width is
+ * sized for a login form, not the two-column chat+review reception-grid. */
+.public-reception .auth-form{max-width:820px}
+

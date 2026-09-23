@@ -9,6 +9,14 @@ let legacyRequest: string;
 let workshopA: string;
 let workshopB: string;
 async function asUser(id: string) { await db.exec("reset role; set role authenticated;"); await db.query("select set_config('request.jwt.claim.sub',$1,false)", [id]); }
+async function asAnon(ip?: string) { await db.exec('reset role; set role anon;'); await db.query("select set_config('request.headers',$1,false)", [ip ? JSON.stringify({ 'x-forwarded-for': ip }) : '']); }
+async function publicIntake(slug: string, opts: { phone?: string; plate?: string; hp?: string; startedAt?: string | null; clientId?: string; messages?: { role: string; content: string }[] } = {}) {
+  const clientId = opts.clientId ?? crypto.randomUUID();
+  const data = { name: 'Cliente Público', phone: opts.phone ?? '655111222', brand: 'SEAT', model: 'Ibiza', plate: opts.plate ?? '', reason: 'Ruido en el motor', availability: 'Tardes' };
+  const messages = opts.messages ?? [{ role: 'user', content: 'Quiero una revisión' }];
+  const accepted = (await db.query<{ public_intake: boolean }>('select public.public_intake(p_slug=>$1, p_data=>$2::jsonb, p_messages=>$3::jsonb, p_client_id=>$4::uuid, p_hp=>$5, p_started_at=>$6::timestamptz)', [slug, JSON.stringify(data), JSON.stringify(messages), clientId, opts.hp ?? '', opts.startedAt ?? null])).rows[0].public_intake;
+  return { clientId, accepted };
+}
 async function execute(workshop: string, command: unknown) { await db.query('select public.execute_command($1::uuid,$2::jsonb)', [workshop, JSON.stringify(command)]); }
 function intake(phone = '611222333', plate = '1234BCD') { return { type: 'intake', id: crypto.randomUUID(), data: { name: 'Persona Prueba', phone, brand: 'SEAT', model: 'León', plate, reason: 'Revisión de mantenimiento', availability: 'Mañanas', notes: '' }, messages: [{ role: 'user', content: 'Quiero una revisión' }] }; }
 beforeAll(async () => {
@@ -117,7 +125,7 @@ describe('Equipo: invitaciones y gestión de miembros', () => {
     await asUser(owner);
     workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller equipo') id")).rows[0].id;
     await db.exec('reset role');
-    otherWorkshop = (await db.query<{ id: string }>("insert into public.workshops(name) values('Otro taller') returning id")).rows[0].id;
+    otherWorkshop = (await db.query<{ id: string }>("insert into public.workshops(name,slug) values('Otro taller','otro-taller') returning id")).rows[0].id;
     await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'owner')", [otherWorkshop, alreadyMember]);
   });
   it('el propietario invita, y reinvitar el mismo correo no duplica la fila pendiente', async () => {
@@ -298,5 +306,118 @@ describe('Equipo: invitaciones y gestión de miembros', () => {
     expect(await memberCount()).toBe(20);
     await db.exec('reset role');
     expect((await db.query('select * from public.workshop_members where workshop_id=$1 and user_id=$2', [capWorkshop, secondInvitee])).rows).toHaveLength(0);
+  });
+});
+
+describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada más', () => {
+  let slugA: string;
+  beforeAll(async () => {
+    await db.exec('reset role');
+    slugA = (await db.query<{ slug: string }>('select slug from public.workshops where id=$1', [workshopA])).rows[0].slug;
+    expect(slugA).toBe('taller-a');
+  });
+  it('un nombre cuyo slug cae justo en un guión al truncarlo a 40 caracteres no termina en guión ni aborta la creación', async () => {
+    // slugify('Taller ' + 'a'.repeat(32) + ' Madrid') is 'taller-' + 32 a's +
+    // '-madrid'; the hyphen before 'madrid' sits exactly at index 39, so
+    // left(...,40) alone would cut right after it and leave a trailing '-',
+    // which workshops_slug_format rejects.
+    const longName = 'Taller ' + 'a'.repeat(32) + ' Madrid';
+    const boundaryOwner = '10000000-0000-4000-8000-000000000201';
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id) values($1)', [boundaryOwner]);
+    await asUser(boundaryOwner);
+    const boundaryWorkshop = (await db.query<{ id: string }>('select public.create_workshop($1) id', [longName])).rows[0].id;
+    await db.exec('reset role');
+    const slug = (await db.query<{ slug: string }>('select slug from public.workshops where id=$1', [boundaryWorkshop])).rows[0].slug;
+    expect(slug.endsWith('-')).toBe(false);
+    expect(slug).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
+  });
+  it('devuelve solo los datos públicos del taller por su slug, y nada para un slug inexistente', async () => {
+    await asAnon();
+    const info = (await db.query<{ s: { id: string; name: string } }>('select public.public_workshop_info($1) s', [slugA])).rows[0].s;
+    expect(info).toMatchObject({ name: 'Taller A' });
+    expect(info).not.toHaveProperty('phone');
+    const missing = (await db.query<{ s: unknown }>("select public.public_workshop_info('no-existe') s")).rows[0].s;
+    expect(missing).toBeNull();
+  });
+  it('crea la solicitud con su cliente, vehículo y conversación, es idempotente y no concede ningún otro acceso', async () => {
+    await db.exec('reset role');
+    const before = (await db.query('select * from public.requests where workshop_id=$1', [workshopA])).rows.length;
+    await asAnon();
+    const first = await publicIntake(slugA, { phone: '655222333', plate: '4321XYZ' });
+    expect(first.accepted).toBe(true);
+    const retry = await publicIntake(slugA, { phone: '655222333', plate: '4321XYZ', clientId: first.clientId });
+    expect(retry.accepted).toBe(true);
+    await db.exec('reset role');
+    expect((await db.query('select * from public.requests where workshop_id=$1', [workshopA])).rows.length).toBe(before + 1);
+    expect((await db.query("select * from public.audit_events where action='public_intake' and entity_id=$1", [first.clientId])).rows).toHaveLength(1);
+    const conv = (await db.query<{ channel: string }>('select c.channel from public.conversations c join public.requests r on r.conversation_id=c.id where r.id=$1', [first.clientId])).rows[0];
+    expect(conv.channel).toBe('public');
+    await asAnon();
+    await expect(db.query('select * from public.requests')).rejects.toThrow();
+    await expect(db.query("select public.execute_command($1::uuid,$2::jsonb)", [workshopA, JSON.stringify({ type: 'intake', id: crypto.randomUUID(), data: {}, messages: [] })])).rejects.toThrow();
+    await expect(db.query('select * from public.public_intake_attempts')).rejects.toThrow();
+  });
+  it('una matrícula de otro cliente no revela su titularidad: se acepta como cualquier otra, sin vincularla ni tocar al dueño real, y consume el límite por IP', async () => {
+    // Codex adversarial review: raising "pertenece a otro cliente" let an
+    // anonymous caller distinguish "this plate exists and belongs to someone
+    // else" from "unknown plate" purely from the response, and the raise
+    // rolled back before the attempt counter ran, so probing was free. Both
+    // must be closed: same outcome shape, and the counter still moves.
+    const ip = '198.51.100.7';
+    await db.exec('reset role');
+    const attemptsBefore = (await db.query('select * from public.public_intake_attempts where ip=$1', [ip])).rows.length;
+    const ownerBefore = (await db.query<{ customer_id: string; version: number }>("select customer_id,version from public.vehicles where workshop_id=$1 and plate='4321XYZ'", [workshopA])).rows[0];
+    await asAnon(ip);
+    const colliding = await publicIntake(slugA, { phone: '655999888', plate: '4321XYZ', messages: [{ role: 'user', content: 'Mi matrícula es 4321XYZ' }] });
+    const fresh = await publicIntake(slugA, { phone: '655999889', plate: '9999FREE' });
+    expect(colliding.accepted).toBe(true);
+    expect(colliding.accepted).toBe(fresh.accepted); // indistinguishable outcome
+    await db.exec('reset role');
+    // The real owner's vehicle is untouched: not reassigned, not versioned.
+    const ownerAfter = (await db.query<{ customer_id: string; version: number }>("select customer_id,version from public.vehicles where workshop_id=$1 and plate='4321XYZ'", [workshopA])).rows[0];
+    expect(ownerAfter).toEqual(ownerBefore);
+    // The new customer got their own vehicle, created without the plate.
+    const newRequest = (await db.query<{ vehicle_id: string; conversation_id: string }>('select vehicle_id,conversation_id from public.requests where id=$1', [colliding.clientId])).rows[0];
+    const newVehicle = (await db.query<{ plate: string; customer_id: string }>('select plate,customer_id from public.vehicles where id=$1', [newRequest.vehicle_id])).rows[0];
+    expect(newVehicle.plate).toBe('');
+    expect(newVehicle.customer_id).not.toBe(ownerBefore.customer_id);
+    // What the visitor actually typed is preserved for staff to reconcile,
+    // even though it was dropped from the vehicle record itself.
+    const conv = (await db.query<{ messages: { content: string }[] }>('select messages from public.conversations where id=$1', [newRequest.conversation_id])).rows[0];
+    expect(conv.messages.some(m => m.content.includes('4321XYZ'))).toBe(true);
+    // Both submissions from this IP counted against the rate limit.
+    const attemptsAfter = (await db.query('select * from public.public_intake_attempts where ip=$1', [ip])).rows.length;
+    expect(attemptsAfter).toBe(attemptsBefore + 2);
+  });
+  it('el honeypot y un envío demasiado rápido no crean nada, informan del motivo solo al cliente real (no con una excepción) y no bloquean por sí solos reintentos posteriores', async () => {
+    await db.exec('reset role');
+    const before = (await db.query('select * from public.requests where workshop_id=$1', [workshopA])).rows.length;
+    await asAnon();
+    const bot = await publicIntake(slugA, { phone: '655333444', hp: 'soy-un-bot' });
+    expect(bot.accepted).toBe(false);
+    const tooFast = await publicIntake(slugA, { phone: '655444555', startedAt: new Date().toISOString() });
+    expect(tooFast.accepted).toBe(false);
+    await db.exec('reset role');
+    expect((await db.query('select * from public.requests where workshop_id=$1', [workshopA])).rows.length).toBe(before);
+  });
+  it('un reloj del visitante adelantado al del servidor no bloquea el envío para siempre (la comprobación de tiempo mínimo ignora duraciones negativas)', async () => {
+    await asAnon();
+    // A device clock 5 minutes ahead of the server makes p_started_at land
+    // in the future, so clock_timestamp() - p_started_at is negative -- the
+    // exact case that used to satisfy "< 20 seconds" and silently reject
+    // every retry from that visitor forever.
+    const futureStartedAt = new Date(Date.now() + 5 * 60000).toISOString();
+    const result = await publicIntake(slugA, { phone: '655666777', startedAt: futureStartedAt });
+    expect(result.accepted).toBe(true);
+  });
+  it('limita los envíos por IP sin depender de auth.uid(), que no existe para un visitante anónimo', async () => {
+    const ip = '203.0.113.9';
+    for (let i = 0; i < 5; i++) { await asAnon(ip); const r = await publicIntake(slugA, { phone: '656000' + String(i).padStart(3, '0') }); expect(r.accepted).toBe(true); }
+    await asAnon(ip);
+    await expect(publicIntake(slugA, { phone: '656999999' })).rejects.toThrow('Demasiados envíos');
+    await asAnon('203.0.113.10');
+    const other = await publicIntake(slugA, { phone: '656888888' });
+    expect(other.accepted).toBe(true);
   });
 });

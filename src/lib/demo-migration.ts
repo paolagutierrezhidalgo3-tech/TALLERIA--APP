@@ -1,6 +1,17 @@
 import type { State, Resource } from './domain';
 import { tryNormalizePhone } from './phone';
-export function upgradeDemo(source: State): State {
+// Mirrors public.slugify + generate_workshop_slug: lowercase, strip
+// diacritics, collapse anything that isn't a-z0-9 into single hyphens, trim
+// outer hyphens, then truncate. The trim runs a second time after the
+// truncation too -- cutting at exactly 40 chars can land right after a
+// hyphen and reintroduce a trailing one, same as the SQL side. No collision
+// handling here (unlike the server's generate_workshop_slug) since a single
+// browser's demo state only ever has one workshop.
+function localSlug(name: string): string {
+  const collapsed = name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return collapsed.slice(0, 40).replace(/^-+|-+$/g, '');
+}
+function upgradeToV3(source: State): State {
   if (source.schema_version === 3) return source;
   if (source.schema_version === 2) {
     const upgraded = structuredClone(source);
@@ -34,5 +45,12 @@ export function upgradeDemo(source: State): State {
   state.requests.forEach(r => { r.version ??= 1; r.customer_id = redirects.get(r.customer_id) ?? r.customer_id; });
   state.requests.sort((a,b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
   state.appointments.forEach(a => { a.version ??= 1; a.resource_id ??= state.resources![0].id; });
+  return state;
+}
+export function upgradeDemo(source: State): State {
+  if (source.schema_version === 4) return source;
+  const state = structuredClone(upgradeToV3(source));
+  state.schema_version = 4;
+  state.workshop.slug ??= localSlug(state.workshop.name) || 'taller';
   return state;
 }

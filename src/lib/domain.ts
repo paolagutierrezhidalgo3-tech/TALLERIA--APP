@@ -18,17 +18,17 @@ export const intakeSchema = z.object({
 });
 export type Intake = z.infer<typeof intakeSchema>;
 export interface Message { role: 'assistant' | 'user'; content: string }
-export interface Workshop { version?: number; id: string; name: string; phone: string; address: string; hours: string; timezone: string; appointment_minutes: number }
+export interface Workshop { version?: number; slug?: string; id: string; name: string; phone: string; address: string; hours: string; timezone: string; appointment_minutes: number }
 export interface Customer { version?: number; phone_e164?: string | null; id: string; workshop_id: string; name: string; phone: string; notes: string }
 export interface Vehicle { version?: number; id: string; workshop_id: string; customer_id: string; brand: string; model: string; plate: string }
-export interface Conversation { id: string; workshop_id: string; messages: Message[]; channel: 'simulator'; created_at: string }
+export interface Conversation { id: string; workshop_id: string; messages: Message[]; channel: 'simulator' | 'public'; created_at: string }
 export interface ServiceRequest { version?: number; id: string; workshop_id: string; customer_id: string; vehicle_id: string; conversation_id: string; reason: string; availability: string; notes: string; status: RequestStatus; created_at: string }
 export interface Appointment { version?: number; resource_id?: string; id: string; workshop_id: string; request_id: string; starts_at: string; duration_minutes: number; status: 'scheduled' | 'completed' | 'cancelled'; notes: string }
 export interface Resource { id: string; workshop_id: string; name: string; kind: 'bay' | 'mechanic' | 'lift'; active: boolean; version?: number }
 export interface AuditEvent { id: string; workshop_id: string; user_id: string | null; action: string; entity_type: string; entity_id: string; created_at: string; metadata?: Record<string, unknown> }
 export interface State { schema_version?: number; role?: 'owner' | 'staff'; user_id?: string; resources?: Resource[]; audit?: AuditEvent[]; metrics?: { new_requests: number; upcoming: number; pending_customers: number; completed: number }; page_info?: { view: string; offset: number; total: number; ids: string[] }; customer_counts?: Record<string, { vehicles: number; requests: number }>; workshop: Workshop; customers: Customer[]; vehicles: Vehicle[]; conversations: Conversation[]; requests: ServiceRequest[]; appointments: Appointment[] }
 export type Command =
-  | { type: 'intake'; id: string; data: Intake; messages: Message[] }
+  | { type: 'intake'; id: string; data: Intake; messages: Message[]; channel?: 'simulator' | 'public' }
   | { type: 'status'; version?: number; id: string; status: RequestStatus }
   | { type: 'appointment'; version?: number; request_version?: number; resource_id?: string; id: string; request_id: string; starts_at: string; duration_minutes: number; notes: string }
   | { type: 'appointment_status'; version?: number; request_version?: number; id: string; status: Appointment['status'] }
@@ -65,7 +65,7 @@ export function applyCommand(current: State, command: Command, now = new Date())
       vehicle.brand = d.brand; vehicle.model = d.model; vehicle.version = (vehicle.version ?? 1) + 1;
     }
     const conversation_id = crypto.randomUUID();
-    s.conversations.unshift({ id: conversation_id, workshop_id, messages: command.messages, channel: 'simulator', created_at: now.toISOString() });
+    s.conversations.unshift({ id: conversation_id, workshop_id, messages: command.messages, channel: command.channel ?? 'simulator', created_at: now.toISOString() });
     s.requests.unshift({ version: 1, id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: d.availability, notes: d.notes, status: 'nueva', created_at: now.toISOString() });
   }
   if (command.type === 'status') {
