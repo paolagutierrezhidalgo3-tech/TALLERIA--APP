@@ -29,7 +29,7 @@ No inventar commits, resultados de pruebas, despliegues ni cierres de fases. La 
 | Migración 006 | Aplicada manualmente y verificada mediante flujo real | Conservar el flujo público sin cuenta |
 | Migración 007 | Aplicada mediante script seguro y verificada en Supabase real | Mantener consentimiento obligatorio en recepción pública |
 | Horarios estructurados | Claude los está implementando | Completar persistencia, bloqueo efectivo y UI owner |
-| Recuperación de contraseña | Función existente; prueba manual completa pendiente | Verificar el recorrido completo antes de darlo por validado |
+| Recuperación de contraseña | Función existente; prueba manual completa de extremo a extremo superada en Supabase real (25 de septiembre de 2026, con cuenta de prueba desechable) | Ninguna; validada |
 | Despliegue Vercel | Aún no desplegado | Preparación operativa posterior a horarios |
 
 ### Decisiones de producto confirmadas
@@ -77,7 +77,7 @@ Los detalles de zona horaria, duración y estados de citas deben extraerse del m
 | Permisos y trazabilidad | Roles `owner`/`staff` y auditoría |
 | Consulta y consistencia | Paginación, búsqueda sin tildes y concurrencia/versiones |
 
-Este inventario confirma funciones existentes; no atribuye a cada una un commit o una prueba que no se haya documentado. En particular, la prueba manual completa de recuperación de contraseña sigue pendiente.
+Este inventario confirma funciones existentes; no atribuye a cada una un commit o una prueba que no se haya documentado. La prueba manual completa de recuperación de contraseña ya se realizó (25 de septiembre de 2026); ver la sección 12.
 
 ### Revisiones independientes de Codex
 
@@ -195,7 +195,7 @@ Cubrir citas dentro y fuera del horario, citas que terminan después del cierre,
 2. Ejecutar tests/typecheck/lint/build, obtener revisión independiente de Codex y corregir bloqueantes.
 3. Si hay una nueva migración, obtener confirmación explícita antes de aplicarla a Supabase real y verificarla después. Distinguir cierre del código de activación real.
 4. Hacer commit/push y actualizar este plan con evidencia y pendientes reales.
-5. Abordar notificaciones/email y preparación operativa/despliegue. Incluir la prueba manual completa pendiente de recuperación de contraseña y documentar su resultado.
+5. Abordar notificaciones/email y preparación operativa/despliegue. (La prueba manual completa de recuperación de contraseña ya se realizó el 25 de septiembre de 2026; ver la sección 12.)
 6. Realizar el pulido visual/UX después.
 
 El detalle de proveedores, canales de notificación, configuración de despliegue y criterios operativos se concretará en su bloque. No considerar esas capacidades implementadas ni desplegadas por aparecer en el roadmap.
@@ -270,26 +270,24 @@ Este archivo debe estar en el repositorio y ser leído al inicio. Su mera presen
 
 Actualizar al finalizar cada sesión significativa y al cerrar cada bloque. Mantener este apartado como el resumen vigente; conservar el historial relevante en el control de versiones.
 
-### Checkpoint actual — 24 de septiembre de 2026 (actualizado, misma sesión, tras aplicar la migración 009)
+### Checkpoint actual — 25 de septiembre de 2026 (prueba manual de recuperación de contraseña superada)
 
 | Campo | Estado |
 | --- | --- |
-| Bloque actual | Horarios estructurados por taller |
-| Estado | **Cerrado**: código implementado, verificado por Codex (4 rondas, sin bloqueantes en la última), commiteado/empujado, y las correcciones activas en Supabase real (verificado por lectura directa del esquema) |
+| Bloque actual | Horarios estructurados por taller — **cerrado**. Único pendiente general del roadmap: la prueba manual de recuperación de contraseña, ya realizada (ver abajo) |
+| Estado | Código implementado, verificado por Codex (4 rondas, sin bloqueantes en la última), commiteado/empujado, y las correcciones activas en Supabase real (verificado por lectura directa del esquema). Prueba manual pendiente del roadmap (recuperación de contraseña) **superada** |
 | Alcance confirmado | Horario semanal + excepciones/festivos + bloqueo real de citas fuera de horario + UI owner en Configuración |
 | Línea base | Stack, modos y funciones descritos en las secciones 2–4 |
-| Rama y HEAD comprobados | `main`, HEAD `7408745` tras push (`fb8e6ca..7408745`); la migración 009 (ver abajo) sigue sin commitear en el árbol de trabajo al cierre de esta actualización |
-| Supabase real | 001–005 aplicadas previamente; 006 aplicada manualmente y verificada; 007 aplicada mediante script seguro y verificada; **008 estaba ya aplicada desde antes de esta sesión (divergencia detectada, ver nota abajo); 009 aplicada y verificada en esta sesión** |
+| Rama y HEAD comprobados | `main`, HEAD `2bce298` tras push. No hay cambios de código pendientes de commitear al cierre de esta actualización (solo esta edición del plan) |
+| Supabase real | 001–005 aplicadas previamente; 006 y 007 verificadas mediante flujo real; 008 ya estaba aplicada desde antes de esta sesión (divergencia detectada y documentada en la sección 5); 009 aplicada y verificada por el usuario en esta sesión |
 | Consentimiento | `requests.consent_at`; `public_intake` de 7 argumentos; obligatorio en recepción pública; históricos nulos |
 | Automatización de BD | `TALLERIA_DB_URL`, Session Pooler, `db-query.mjs`, `apply-migration.mjs`, CA TLS fijada; no concede permiso para nuevas migraciones |
-| Commit/push histórico confirmado | `fb8e6ca`, fase de recepción pública; `295cbbe`, implementación inicial de horarios estructurados; `7408745`, correcciones de las 4 rondas de Codex sobre horarios estructurados; **la migración 009 (aplicada a Supabase real) queda pendiente de commit/push en esta sesión** |
-| Revisiones anteriores | Varias rondas de Codex sobre equipo/auth/recepción pública y correcciones relevantes realizadas |
-| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio (`pnpm run typecheck`) · Lint: limpio (`pnpm run lint`) · Build: correcto (`pnpm run build`). Ejecutados antes del commit `7408745`, sobre el árbol con todas las correcciones de código aplicadas |
-| Revisión Codex de horarios | **4 rondas sobre el mismo bloque, resumen en el historial de abajo.** Ronda 1: 2 bloqueantes + 3 menores sobre la implementación de `295cbbe` (todos corregidos). Ronda 2: verificación de esos 5 fixes — encontró un bloqueante nuevo introducido por la propia corrección DST (asumía delta fijo de 1h; rompía Australia/Lord_Howe, que usa 30 min). Ronda 3: verificación del fix de Lord Howe — encontró OTRO caso no cubierto por el muestreo enero/julio (Africa/Casablanca suspende su DST en Ramadán, fecha móvil). Ronda 4 (sobre el algoritmo reescrito de forma genérica, sin muestreo de meses fijos): **sin hallazgos bloqueantes**; 2 menores (test histórico de Casablanca recomendado en vez de omitirlo; un comentario impreciso), ambos corregidos. Sin fugas multi-tenant ni bypass de autorización en ninguna ronda |
-| Nuevas migraciones de horarios | **Divergencia detectada al retomar la aplicación real**: `supabase/migrations/202609240008_business_hours.sql` ya estaba aplicada en Supabase real desde antes de esta sesión (no reflejado en el checkpoint previo), pero en su forma original, sin las correcciones de las 4 rondas de Codex. Volver a aplicar el archivo 008 completo habría fallado (crea tablas/columnas que ya existen, sin protección `if not exists`, todo en una transacción). Se preparó `supabase/migrations/202609240009_business_hours_fixes.sql`, con únicamente los dos cuerpos de función corregidos (`execute_command`, `workspace_snapshot`, ambos `create or replace function`, seguros de re-aplicar sin tocar tablas/columnas existentes), verificados byte a byte idénticos a los del archivo 008 ya probado. El usuario ejecutó `node scripts/apply-migration.mjs supabase/migrations/202609240009_business_hours_fixes.sql --confirm` (el clasificador de modo automático bloqueó que Claude lo ejecutara, incluso en vista previa). **Verificado por lectura directa tras aplicarla: ambas funciones en Supabase real ya contienen las correcciones** |
-| Prueba manual pendiente | Recuperación de contraseña de extremo a extremo |
+| Commit/push histórico confirmado | `fb8e6ca` (recepción pública), `295cbbe` (horarios, implementación inicial), `7408745` (correcciones de las 4 rondas de Codex), `b023caf` (checkpoint), `2bce298` (migración 009 + checkpoint) |
+| Revisiones anteriores | Varias rondas de Codex sobre equipo/auth/recepción pública, y las 4 rondas sobre horarios estructurados de esta sesión (resumen en el historial de abajo) |
+| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio · Lint: limpio · Build: correcto. Ejecutados antes del commit `7408745` |
+| Prueba manual: recuperación de contraseña | **Superada de extremo a extremo, en Supabase real (modo `supabase`, no demo), guiada paso a paso por el usuario en su navegador** (sin extensión Claude in Chrome conectada). Cuenta de prueba desechable `correo-real+test@gmail.com` (alias `+`, nunca la cuenta real del owner): registro → confirmación de correo → cierre de sesión → "¿Olvidaste tu contraseña?" → mensaje genérico sin confirmar si la cuenta existe → enlace de recuperación → evento `PASSWORD_RECOVERY` → pantalla de nueva contraseña → "Contraseña actualizada" → contraseña antigua rechazada, nueva aceptada. Cuenta y taller de prueba borrados después (`DELETE` en cascada desde `workshops`, más `auth.users`), verificado que la cuenta y el taller reales del owner no se tocaron (ids distintos comprobados antes y después de borrar) |
 | Despliegue | Vercel aún no desplegado |
-| Próximo paso exacto | Commit/push de `202609240009_business_hours_fixes.sql` y de esta actualización del plan (código ya aplicado en Supabase real; falta solo dejarlo versionado). Después: prueba manual de recuperación de contraseña, y planificar el bloque de notificaciones/email y despliegue |
+| Próximo paso exacto | Concretar y acotar el bloque D (notificaciones/email y preparación operativa/despliegue) con el usuario antes de empezar a implementarlo |
 | Después | Notificaciones/email y preparación operativa/despliegue; luego pulido visual/UX |
 
 ### Plantilla de actualización
@@ -351,4 +349,30 @@ Despliegue: no realizado
 Bloqueos o limitaciones: ninguno; el clasificador de modo automático de Claude Code bloqueó ejecutar apply-migration.mjs (incluso en vista previa, sin --confirm) por estar etiquetado "Production Deploy" -- el usuario lo ejecutó directamente en su terminal
 Próximo paso exacto: commitear y empujar 202609240009_business_hours_fixes.sql junto con esta actualización del plan (el código ya está aplicado en Supabase real; solo falta dejarlo versionado); después, la prueba manual de recuperación de contraseña y planificar el bloque de notificaciones/email y despliegue
 Actualización de este plan versionada: sí, en el commit que sigue a este cierre
+```
+
+```text
+Fecha: 25 de septiembre de 2026
+Rama y HEAD comprobados: main, HEAD 2bce298 (push confirmado en la sesión anterior)
+Bloque actual y alcance: prueba manual pendiente del roadmap -- recuperación de contraseña de extremo a extremo, en Supabase real
+Estado: cerrado
+Hecho en esta sesión: prueba manual guiada paso a paso (sin extensión Claude in Chrome conectada) con una cuenta de prueba desechable (alias +test del correo del usuario, nunca su cuenta real de owner); servidor local (`pnpm run dev`) apuntando a Supabase real (NEXT_PUBLIC_DATA_MODE=supabase); tras la prueba, borrada la cuenta y el taller de prueba de Supabase real
+Decisiones confirmadas: ninguna decisión de producto nueva
+Archivos principales: ninguno (prueba manual; no hubo cambios de código). Cambio de datos: DELETE en Supabase real sobre un taller y una cuenta de prueba, sin afectar migraciones ni esquema
+Pendientes concretos y hallazgos menores: ninguno
+Migraciones preparadas (identificador y finalidad): ninguna en esta sesión
+Confirmación explícita del usuario para aplicación real (referencia y alcance): el usuario pidió expresamente borrar la cuenta y el taller de prueba, y explícitamente excluyó su cuenta y taller reales ("no toques mi cuenta real ni mi taller real"); verificado por id antes y después de borrar que son entidades distintas
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna migración; sí una limpieza de datos (DELETE, no un cambio de esquema) sobre el taller de prueba `b5d6144e-...` y la cuenta `1a6906f0-...`, verificada por lectura directa que ambos desaparecieron y que el taller real `6c349da4-...` y la cuenta real siguen intactos
+Tests: no aplica (prueba manual, no automatizada)
+Typecheck: no aplica
+Lint: no aplica
+Build: no aplica
+Pruebas manuales: Supabase real, modo `supabase` (no demo) -- recorrido completo: registro con cuenta de prueba → confirmación de correo → cierre de sesión → "¿Olvidaste tu contraseña?" → mensaje genérico sin confirmar existencia de cuenta → enlace de recuperación recibido por correo → evento PASSWORD_RECOVERY → pantalla de nueva contraseña → "Contraseña actualizada" → contraseña antigua rechazada, nueva aceptada. Resultado: superada sin hallazgos
+Revisión de Codex: no aplica en esta sesión
+Commit de cierre confirmado: no aplica (sin cambios de código; esta actualización del plan se commiteará junto con la siguiente sesión o de forma independiente si el usuario lo pide)
+Push: no aplica
+Despliegue: no realizado
+Bloqueos o limitaciones: ninguno
+Próximo paso exacto: concretar y acotar con el usuario el bloque D (notificaciones/email y preparación operativa/despliegue) antes de empezar a implementarlo
+Actualización de este plan versionada: pendiente de commit
 ```
