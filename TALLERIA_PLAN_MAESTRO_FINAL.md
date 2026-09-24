@@ -91,9 +91,9 @@ Codex ya realizó varias rondas adversariales sobre equipo, autenticación y rec
 
 Preservar esas correcciones y revisar regresiones cuando un cambio afecte a esas áreas. Este historial no equivale a una garantía absoluta de ausencia de defectos ni sustituye la revisión del nuevo bloque de horarios.
 
-## 5. Migraciones 001–007 y Supabase real
+## 5. Migraciones 001–009 y Supabase real
 
-**Las migraciones 001–007 están aplicadas en Supabase real según el estado confirmado.** No quedan pendientes de aplicación por falta de contexto documental.
+**Las migraciones 001–009 están aplicadas en Supabase real según el estado confirmado.** No quedan pendientes de aplicación por falta de contexto documental.
 
 | Migración | Nombre | Estado en Supabase real y evidencia confirmada |
 | --- | --- | --- |
@@ -104,8 +104,12 @@ Preservar esas correcciones y revisar regresiones cuando un cambio afecte a esas
 | 005 | `team_management` | Aplicada previamente |
 | 006 | `public_reception` | Aplicada manualmente en SQL Editor; verificada mediante el flujo real descrito abajo |
 | 007 | `public_consent` | Aplicada posteriormente mediante script seguro; verificada en Supabase real |
+| 008 | `business_hours` | **Ya estaba aplicada al retomar esta sesión, en su forma original (sin las correcciones de la revisión de Codex); no se documentó cuándo ni en qué sesión.** Verificado por lectura directa del esquema real |
+| 009 | `business_hours_fixes` | Aplicada el 24 de septiembre de 2026 mediante `apply-migration.mjs --confirm` (ejecutado por el usuario, con confirmación explícita); solo corrige los cuerpos de `execute_command` y `workspace_snapshot`. Verificada por lectura directa: ambas funciones ya contienen las correcciones |
 
 Los identificadores y nombres anteriores son los confirmados. Consultar el repositorio para las rutas y los nombres completos de archivo; no inferirlos.
+
+**Nota de continuidad:** la migración 008 se descubrió ya aplicada en Supabase real al intentar aplicarla en esta sesión, sin que el checkpoint previo lo reflejara. Al retomar una sesión, comprobar siempre el esquema real antes de asumir que una migración está pendiente solo porque el checkpoint lo dice.
 
 ### Recepción pública: migración 006
 
@@ -266,26 +270,26 @@ Este archivo debe estar en el repositorio y ser leído al inicio. Su mera presen
 
 Actualizar al finalizar cada sesión significativa y al cerrar cada bloque. Mantener este apartado como el resumen vigente; conservar el historial relevante en el control de versiones.
 
-### Checkpoint actual — 24 de septiembre de 2026 (actualizado, misma sesión, tras commit/push)
+### Checkpoint actual — 24 de septiembre de 2026 (actualizado, misma sesión, tras aplicar la migración 009)
 
 | Campo | Estado |
 | --- | --- |
 | Bloque actual | Horarios estructurados por taller |
-| Estado | Código implementado, verificado por Codex (4 rondas, sin bloqueantes en la última) y commiteado/empujado; **solo queda pendiente la activación real de la migración 008** |
+| Estado | **Cerrado**: código implementado, verificado por Codex (4 rondas, sin bloqueantes en la última), commiteado/empujado, y las correcciones activas en Supabase real (verificado por lectura directa del esquema) |
 | Alcance confirmado | Horario semanal + excepciones/festivos + bloqueo real de citas fuera de horario + UI owner en Configuración |
 | Línea base | Stack, modos y funciones descritos en las secciones 2–4 |
-| Rama y HEAD comprobados | `main`, HEAD `7408745` (push confirmado: `fb8e6ca..7408745`). El código de horarios se implementó en `295cbbe`; las correcciones de las 4 rondas de Codex de esta sesión se commitearon en `7408745`, con instrucción explícita del usuario para commit/push |
-| Supabase real | 001–005 aplicadas previamente; 006 aplicada manualmente y verificada; 007 aplicada mediante script seguro y verificada |
+| Rama y HEAD comprobados | `main`, HEAD `7408745` tras push (`fb8e6ca..7408745`); la migración 009 (ver abajo) sigue sin commitear en el árbol de trabajo al cierre de esta actualización |
+| Supabase real | 001–005 aplicadas previamente; 006 aplicada manualmente y verificada; 007 aplicada mediante script seguro y verificada; **008 estaba ya aplicada desde antes de esta sesión (divergencia detectada, ver nota abajo); 009 aplicada y verificada en esta sesión** |
 | Consentimiento | `requests.consent_at`; `public_intake` de 7 argumentos; obligatorio en recepción pública; históricos nulos |
 | Automatización de BD | `TALLERIA_DB_URL`, Session Pooler, `db-query.mjs`, `apply-migration.mjs`, CA TLS fijada; no concede permiso para nuevas migraciones |
-| Commit/push histórico confirmado | `fb8e6ca`, fase de recepción pública; `295cbbe`, implementación inicial de horarios estructurados; **`7408745`, correcciones de las 4 rondas de Codex sobre horarios estructurados — commit y push confirmados en esta sesión** |
+| Commit/push histórico confirmado | `fb8e6ca`, fase de recepción pública; `295cbbe`, implementación inicial de horarios estructurados; `7408745`, correcciones de las 4 rondas de Codex sobre horarios estructurados; **la migración 009 (aplicada a Supabase real) queda pendiente de commit/push en esta sesión** |
 | Revisiones anteriores | Varias rondas de Codex sobre equipo/auth/recepción pública y correcciones relevantes realizadas |
-| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio (`pnpm run typecheck`) · Lint: limpio (`pnpm run lint`) · Build: correcto (`pnpm run build`). Ejecutados antes del commit de cierre, sobre el árbol con todas las correcciones aplicadas |
+| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio (`pnpm run typecheck`) · Lint: limpio (`pnpm run lint`) · Build: correcto (`pnpm run build`). Ejecutados antes del commit `7408745`, sobre el árbol con todas las correcciones de código aplicadas |
 | Revisión Codex de horarios | **4 rondas sobre el mismo bloque, resumen en el historial de abajo.** Ronda 1: 2 bloqueantes + 3 menores sobre la implementación de `295cbbe` (todos corregidos). Ronda 2: verificación de esos 5 fixes — encontró un bloqueante nuevo introducido por la propia corrección DST (asumía delta fijo de 1h; rompía Australia/Lord_Howe, que usa 30 min). Ronda 3: verificación del fix de Lord Howe — encontró OTRO caso no cubierto por el muestreo enero/julio (Africa/Casablanca suspende su DST en Ramadán, fecha móvil). Ronda 4 (sobre el algoritmo reescrito de forma genérica, sin muestreo de meses fijos): **sin hallazgos bloqueantes**; 2 menores (test histórico de Casablanca recomendado en vez de omitirlo; un comentario impreciso), ambos corregidos. Sin fugas multi-tenant ni bypass de autorización en ninguna ronda |
-| Nuevas migraciones de horarios | `supabase/migrations/202609240008_business_hours.sql`, ya presente en el repositorio desde `295cbbe`, con las correcciones de esta sesión ya commiteadas en `7408745` (excepciones resucitadas; filtro de fecha del snapshot; el fix de DST fue solo en `src/lib/domain.ts`, el motor TypeScript, ya que el lado SQL usa `AT TIME ZONE` nativo y no necesitó cambios). **Sigue sin aplicarse a Supabase real. Sin confirmación del usuario para aplicarla** |
+| Nuevas migraciones de horarios | **Divergencia detectada al retomar la aplicación real**: `supabase/migrations/202609240008_business_hours.sql` ya estaba aplicada en Supabase real desde antes de esta sesión (no reflejado en el checkpoint previo), pero en su forma original, sin las correcciones de las 4 rondas de Codex. Volver a aplicar el archivo 008 completo habría fallado (crea tablas/columnas que ya existen, sin protección `if not exists`, todo en una transacción). Se preparó `supabase/migrations/202609240009_business_hours_fixes.sql`, con únicamente los dos cuerpos de función corregidos (`execute_command`, `workspace_snapshot`, ambos `create or replace function`, seguros de re-aplicar sin tocar tablas/columnas existentes), verificados byte a byte idénticos a los del archivo 008 ya probado. El usuario ejecutó `node scripts/apply-migration.mjs supabase/migrations/202609240009_business_hours_fixes.sql --confirm` (el clasificador de modo automático bloqueó que Claude lo ejecutara, incluso en vista previa). **Verificado por lectura directa tras aplicarla: ambas funciones en Supabase real ya contienen las correcciones** |
 | Prueba manual pendiente | Recuperación de contraseña de extremo a extremo |
 | Despliegue | Vercel aún no desplegado |
-| Próximo paso exacto | Solicitar al usuario confirmación explícita para aplicar la migración 008 a Supabase real; si no se aplica, el bloque queda en "código validado; activación en Supabase real pendiente de confirmación/aplicación" |
+| Próximo paso exacto | Commit/push de `202609240009_business_hours_fixes.sql` y de esta actualización del plan (código ya aplicado en Supabase real; falta solo dejarlo versionado). Después: prueba manual de recuperación de contraseña, y planificar el bloque de notificaciones/email y despliegue |
 | Después | Notificaciones/email y preparación operativa/despliegue; luego pulido visual/UX |
 
 ### Plantilla de actualización
@@ -322,14 +326,14 @@ Actualización de este plan versionada:
 Fecha: 24 de septiembre de 2026
 Rama y HEAD comprobados: main, HEAD 7af4705 (295cbbe bajo ese HEAD ya contenía la implementación de horarios estructurados sin revisión de Codex)
 Bloque actual y alcance: Horarios estructurados por taller — horario semanal + excepciones/festivos + bloqueo real + UI owner en Configuración
-Estado: código validado tras 4 rondas de Codex (sin bloqueantes en la última); activación real (commit/push y migración) pendiente de confirmación del usuario
+Estado: cerrado -- código validado tras 4 rondas de Codex, commiteado/empujado (7408745), y la corrección activa en Supabase real (migración 009, aplicada por el usuario y verificada)
 Hecho en esta sesión: revisada la implementación ya commiteada (295cbbe); ejecutados tests/typecheck/lint/build; 4 rondas de revisión independiente de Codex sobre el mismo bloque (ver detalle abajo), corrigiendo cada hallazgo antes de pasar a la siguiente ronda
 Decisiones confirmadas: ninguna decisión de producto nueva; se mantiene el alcance ya acordado del bloque
 Archivos principales: src/lib/domain.ts, src/lib/demo.ts, src/lib/demo-migration.ts, src/lib/repository.ts, src/lib/domain.test.ts, src/lib/repository.test.ts, src/lib/supabase/database.test.ts, supabase/migrations/202609240008_business_hours.sql
 Pendientes concretos y hallazgos menores: ninguno de los hallazgos de las 4 rondas queda abierto; nota documentada sin corregir (no bloqueante, sin ruta explotable identificada, señalada en la ronda 1): applyCommand en TypeScript es algo más laxo que la función SQL en el aislamiento por workshop_id dentro de la función aislada, no alcanzable en el repositorio demo actual
-Migraciones preparadas (identificador y finalidad): 202609240008_business_hours.sql (ya existía desde 295cbbe; modificada esta sesión para rechazar la resurrección de una excepción eliminada y para que el snapshot use la fecha del taller, no la de la sesión de PostgreSQL; el lado SQL de is_within_business_hours no necesitó cambios, usa AT TIME ZONE nativo)
-Confirmación explícita del usuario para aplicación real (referencia y alcance): no solicitada ni obtenida en esta sesión
-Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna en esta sesión; 001–007 siguen como estaban
+Migraciones preparadas (identificador y finalidad): 202609240008_business_hours.sql (ya existía desde 295cbbe, modificada en el código para rechazar la resurrección de una excepción eliminada y para que el snapshot use la fecha del taller); 202609240009_business_hours_fixes.sql (preparada al descubrir que 008 ya estaba aplicada en su forma original -- ver nota de divergencia en la sección 5 --, con solo los dos cuerpos de función corregidos)
+Confirmación explícita del usuario para aplicación real (referencia y alcance): el usuario pidió expresamente "aplica la migración 008 a Supabase real"; al descubrirse la divergencia se le explicó y eligió preparar la 009; después ejecutó él mismo `node scripts/apply-migration.mjs supabase/migrations/202609240009_business_hours_fixes.sql --confirm` (el clasificador de modo automático bloqueó que Claude lo ejecutara)
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: 202609240009_business_hours_fixes.sql, aplicada por el usuario el 24 de septiembre de 2026; verificada por lectura directa del esquema (pg_get_functiondef de execute_command y workspace_snapshot, sin volcar nada sensible). 001–008 sin cambios en esta sesión (008 ya estaba aplicada desde antes, ver nota de divergencia)
 Tests: pnpm run test — 147/147 correctos (al cierre de las 4 rondas)
 Typecheck: pnpm run typecheck — sin errores
 Lint: pnpm run lint — sin errores
@@ -344,7 +348,7 @@ Revisión de Codex — 4 rondas sobre el mismo bloque (lección para retomar: un
 Commit de cierre confirmado: sí — 7408745, a petición explícita del usuario ("haz commit y push del bloque")
 Push: confirmado — fb8e6ca..7408745 a origin/main
 Despliegue: no realizado
-Bloqueos o limitaciones: ninguno técnico; la aplicación de la migración 008 a Supabase real requiere confirmación explícita del usuario, no solicitada todavía en esta sesión
-Próximo paso exacto: pedir al usuario confirmación explícita para aplicar la migración 008 a Supabase real
-Actualización de este plan versionada: sí, en el mismo commit 7408745; este cierre de commit/push se documenta en un commit de seguimiento inmediatamente posterior
+Bloqueos o limitaciones: ninguno; el clasificador de modo automático de Claude Code bloqueó ejecutar apply-migration.mjs (incluso en vista previa, sin --confirm) por estar etiquetado "Production Deploy" -- el usuario lo ejecutó directamente en su terminal
+Próximo paso exacto: commitear y empujar 202609240009_business_hours_fixes.sql junto con esta actualización del plan (el código ya está aplicado en Supabase real; solo falta dejarlo versionado); después, la prueba manual de recuperación de contraseña y planificar el bloque de notificaciones/email y despliegue
+Actualización de este plan versionada: sí, en el commit que sigue a este cierre
 ```
