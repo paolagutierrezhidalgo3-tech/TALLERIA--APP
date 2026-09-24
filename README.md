@@ -60,7 +60,7 @@ Consulta [la arquitectura](docs/architecture.md) para conocer las relaciones, de
 El desarrollo y la demo funcionan sin este paso.
 
 1. Crea o selecciona un proyecto de Supabase. No necesitas contratar un plan de pago para probar.
-2. Aplica las migraciones de `supabase/migrations` en orden (001 a 006). Si la inicial ya está aplicada, ejecuta solo las pendientes. Consulta [la guía de actualización](docs/iteration-2.md) y realiza una copia de seguridad antes de migrar datos reales.
+2. Aplica las migraciones de `supabase/migrations` en orden (001 a 007). Si la inicial ya está aplicada, ejecuta solo las pendientes. Consulta [la guía de actualización](docs/iteration-2.md) y realiza una copia de seguridad antes de migrar datos reales.
 3. Copia `.env.example` a `.env.local` y configura:
    - `NEXT_PUBLIC_DATA_MODE=supabase`
    - `NEXT_PUBLIC_SUPABASE_URL`: URL del proyecto.
@@ -102,7 +102,7 @@ Sin variables tendrás la demo. Para el modo real configura las tres variables a
 ## Pendiente antes de usarlo con clientes reales
 
 - Verificar el proyecto Supabase real y el aislamiento entre cuentas con sus credenciales configuradas, incluida la nueva recepción pública.
-- Aviso legal, consentimiento y política de retención/borrado en el formulario público: ya recoge datos de clientes reales, no solo del equipo del taller.
+- Política de retención/borrado explícita: ya hay aviso legal y consentimiento obligatorio en el formulario público (`/r/<slug>/aviso-legal`, revisar el texto con un profesional antes de publicarlo), pero la conservación/purga de datos sigue siendo manual.
 - Notificación (por correo, como mínimo) al taller cuando llega una solicitud pública; hoy no hay aviso, solo el contador del panel.
 - Protecciones adicionales de servidor/CDN para el enlace público, más allá del límite por IP dentro de PostgreSQL.
 - Sincronización realtime y políticas de retención de auditoría (ya hay paginación y auditoría básica).

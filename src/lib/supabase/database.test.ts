@@ -10,11 +10,11 @@ let workshopA: string;
 let workshopB: string;
 async function asUser(id: string) { await db.exec("reset role; set role authenticated;"); await db.query("select set_config('request.jwt.claim.sub',$1,false)", [id]); }
 async function asAnon(ip?: string) { await db.exec('reset role; set role anon;'); await db.query("select set_config('request.headers',$1,false)", [ip ? JSON.stringify({ 'x-forwarded-for': ip }) : '']); }
-async function publicIntake(slug: string, opts: { phone?: string; plate?: string; hp?: string; startedAt?: string | null; clientId?: string; messages?: { role: string; content: string }[] } = {}) {
+async function publicIntake(slug: string, opts: { phone?: string; plate?: string; hp?: string; startedAt?: string | null; clientId?: string; messages?: { role: string; content: string }[]; consent?: boolean } = {}) {
   const clientId = opts.clientId ?? crypto.randomUUID();
   const data = { name: 'Cliente Público', phone: opts.phone ?? '655111222', brand: 'SEAT', model: 'Ibiza', plate: opts.plate ?? '', reason: 'Ruido en el motor', availability: 'Tardes' };
   const messages = opts.messages ?? [{ role: 'user', content: 'Quiero una revisión' }];
-  const accepted = (await db.query<{ public_intake: boolean }>('select public.public_intake(p_slug=>$1, p_data=>$2::jsonb, p_messages=>$3::jsonb, p_client_id=>$4::uuid, p_hp=>$5, p_started_at=>$6::timestamptz)', [slug, JSON.stringify(data), JSON.stringify(messages), clientId, opts.hp ?? '', opts.startedAt ?? null])).rows[0].public_intake;
+  const accepted = (await db.query<{ public_intake: boolean }>('select public.public_intake(p_slug=>$1, p_data=>$2::jsonb, p_messages=>$3::jsonb, p_client_id=>$4::uuid, p_hp=>$5, p_started_at=>$6::timestamptz, p_consent=>$7)', [slug, JSON.stringify(data), JSON.stringify(messages), clientId, opts.hp ?? '', opts.startedAt ?? null, opts.consent ?? true])).rows[0].public_intake;
   return { clientId, accepted };
 }
 async function execute(workshop: string, command: unknown) { await db.query('select public.execute_command($1::uuid,$2::jsonb)', [workshop, JSON.stringify(command)]); }
@@ -309,6 +309,97 @@ describe('Equipo: invitaciones y gestión de miembros', () => {
   });
 });
 
+describe('Horario estructurado: is_within_business_hours y execute_command', () => {
+  // 2030-01-02 is a Wednesday (isodow 3); Europe/Madrid is UTC+1 in January.
+  const owner = '10000000-0000-4000-8000-000000000020', staff = '10000000-0000-4000-8000-000000000021';
+  let workshop: string;
+  async function schedule(overrides: Record<string, unknown> = {}) {
+    const rows = (await db.query<{ id: string; version: number }>("select id,version from public.requests where status not in ('completada','cancelada','cita_creada') order by created_at desc limit 1")).rows;
+    return execute(workshop, { type: 'appointment', id: crypto.randomUUID(), request_id: rows[0].id, request_version: rows[0].version, starts_at: '2030-01-02T10:00:00Z', duration_minutes: 60, notes: '', ...overrides });
+  }
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id) values($1),($2)', [owner, staff]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller horarios') id")).rows[0].id;
+    await db.exec('reset role');
+    await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')", [workshop, staff]);
+  });
+  it('sin horario configurado, una cita futura no está restringida', async () => {
+    await asUser(owner);
+    await execute(workshop, intake('622111000', '1000AAA'));
+    await schedule();
+    expect((await db.query('select * from public.appointments')).rows).toHaveLength(1);
+  });
+  it('solo el propietario configura el horario y las excepciones', async () => {
+    await asUser(staff);
+    await expect(execute(workshop, { type: 'workshop_hours', hours_version: 1, ranges: [] })).rejects.toThrow('propietario');
+    await expect(execute(workshop, { type: 'workshop_hour_exception', exception: { id: crypto.randomUUID(), workshop_id: workshop, exception_date: '2030-06-01', closed: true } })).rejects.toThrow('propietario');
+  });
+  it('guarda el horario semanal en su propio contador de versión (no workshops.version) y bloquea citas fuera de tramo', async () => {
+    await asUser(owner);
+    const before = (await db.query<{ version: number; hours_version: number }>('select version,hours_version from public.workshops where id=$1', [workshop])).rows[0];
+    await expect(execute(workshop, { type: 'workshop_hours', hours_version: before.hours_version + 1, ranges: [] })).rejects.toThrow('ha cambiado');
+    await execute(workshop, { type: 'workshop_hours', hours_version: before.hours_version, ranges: [{ day_of_week: 3, opens_at: '09:00', closes_at: '14:00' }] });
+    expect((await db.query('select * from public.workshop_hours where workshop_id=$1', [workshop])).rows).toHaveLength(1);
+    // Guarding the fix for the "Configuración form loses unsaved edits"
+    // bug: saving hours must not touch workshops.version, which is what the
+    // settings form is keyed by.
+    const after = (await db.query<{ version: number; hours_version: number }>('select version,hours_version from public.workshops where id=$1', [workshop])).rows[0];
+    expect(after.version).toBe(before.version);
+    expect(after.hours_version).toBe(before.hours_version + 1);
+    await execute(workshop, intake('622111001', '1000AAB'));
+    await expect(schedule({ starts_at: '2030-01-02T16:00:00Z' })).rejects.toThrow('horario configurado');
+    // 11:00Z (not 10:00Z) so this doesn't collide with the appointment the
+    // previous test already scheduled on the same default resource.
+    await schedule({ starts_at: '2030-01-02T11:00:00Z' });
+    expect((await db.query("select * from public.appointments where status='scheduled'")).rows).toHaveLength(2);
+  });
+  it('rechaza tramos inválidos y duplicados', async () => {
+    await asUser(owner);
+    const hours_version = (await db.query<{ hours_version: number }>('select hours_version from public.workshops where id=$1', [workshop])).rows[0].hours_version;
+    await expect(execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 9, opens_at: '09:00', closes_at: '10:00' }] })).rejects.toMatchObject({ code: 'P0001' });
+    await expect(execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 1, opens_at: '09:00', closes_at: '10:00' }, { day_of_week: 1, opens_at: '09:00', closes_at: '10:00' }] })).rejects.toThrow('duplicados');
+  });
+  it('una excepción cerrada bloquea ese día; una abierta sustituye por completo al horario semanal', async () => {
+    await asUser(owner);
+    await execute(workshop, intake('622111002', '1000AAC'));
+    const exceptionId = crypto.randomUUID();
+    await execute(workshop, { type: 'workshop_hour_exception', exception: { id: exceptionId, workshop_id: workshop, exception_date: '2030-01-09', closed: true } });
+    await expect(schedule({ starts_at: '2030-01-09T10:00:00Z' })).rejects.toThrow('horario configurado');
+    await expect(execute(workshop, { type: 'workshop_hour_exception', exception: { id: exceptionId, workshop_id: workshop, exception_date: '2030-01-09', closed: true } })).rejects.toThrow('ha cambiado');
+    await execute(workshop, { type: 'workshop_hour_exception', exception: { id: exceptionId, workshop_id: workshop, exception_date: '2030-01-09', closed: false, opens_at: '15:00', closes_at: '18:00', version: 1 } });
+    await expect(schedule({ starts_at: '2030-01-09T09:00:00Z' })).rejects.toThrow('horario configurado');
+    await schedule({ starts_at: '2030-01-09T16:00:00Z' });
+    await expect(execute(workshop, { type: 'workshop_hour_exception', exception: { id: crypto.randomUUID(), workshop_id: workshop, exception_date: '2030-01-09', closed: true } })).rejects.toThrow('Ya existe una excepción');
+    await expect(execute(workshop, { type: 'workshop_hour_exception_delete', id: exceptionId, version: 1 })).rejects.toThrow('ha cambiado');
+    await execute(workshop, { type: 'workshop_hour_exception_delete', id: exceptionId, version: 2 });
+    expect((await db.query('select * from public.workshop_hour_exceptions where id=$1', [exceptionId])).rows).toHaveLength(0);
+  });
+  it('workspace_snapshot devuelve el horario y las excepciones próximas del taller', async () => {
+    await asUser(owner);
+    const snapshot = (await db.query<{ s: { hours: unknown[]; hour_exceptions: unknown[] } }>('select public.workspace_snapshot($1) s', [workshop])).rows[0].s;
+    expect(snapshot.hours).toHaveLength(1);
+    expect(Array.isArray(snapshot.hour_exceptions)).toBe(true);
+  });
+  it('una cita de 60 minutos no puede "encoger" para caber en un cierre que en realidad no alcanza, al adelantar el reloj', async () => {
+    // 2030-03-31 (domingo, isodow 7) es cuando Europe/Madrid adelanta el
+    // reloj: a la 01:00Z el horario local salta de las 02:00 a las 03:00.
+    // Una cita de 00:30Z a 01:30Z dura 60 minutos reales pero corresponde a
+    // las 01:30-03:30 en local, no a 01:30-02:30 (lo que daría sumar la
+    // duración sobre la hora local ya convertida, en vez de sobre el
+    // instante real). Con cierre a las 03:00, debe rechazarse por terminar
+    // 30 minutos tarde en la realidad. Reemplaza el horario del taller por
+    // completo, así que va al final: no debe alterar el estado que usan las
+    // pruebas anteriores.
+    await asUser(owner);
+    const hours_version = (await db.query<{ hours_version: number }>('select hours_version from public.workshops where id=$1', [workshop])).rows[0].hours_version;
+    await execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 7, opens_at: '01:00', closes_at: '03:00' }] });
+    await execute(workshop, intake('622111003', '1000AAD'));
+    await expect(schedule({ starts_at: '2030-03-31T00:30:00Z' })).rejects.toThrow('horario configurado');
+  });
+});
+
 describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada más', () => {
   let slugA: string;
   beforeAll(async () => {
@@ -353,10 +444,20 @@ describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada
     expect((await db.query("select * from public.audit_events where action='public_intake' and entity_id=$1", [first.clientId])).rows).toHaveLength(1);
     const conv = (await db.query<{ channel: string }>('select c.channel from public.conversations c join public.requests r on r.conversation_id=c.id where r.id=$1', [first.clientId])).rows[0];
     expect(conv.channel).toBe('public');
+    const consentAt = (await db.query<{ consent_at: string | null }>('select consent_at from public.requests where id=$1', [first.clientId])).rows[0].consent_at;
+    expect(consentAt).not.toBeNull();
     await asAnon();
     await expect(db.query('select * from public.requests')).rejects.toThrow();
     await expect(db.query("select public.execute_command($1::uuid,$2::jsonb)", [workshopA, JSON.stringify({ type: 'intake', id: crypto.randomUUID(), data: {}, messages: [] })])).rejects.toThrow();
     await expect(db.query('select * from public.public_intake_attempts')).rejects.toThrow();
+  });
+  it('sin la casilla de consentimiento marcada, no crea nada y explica el motivo (no es un heurístico silencioso)', async () => {
+    await db.exec('reset role');
+    const before = (await db.query('select * from public.requests where workshop_id=$1', [workshopA])).rows.length;
+    await asAnon();
+    await expect(publicIntake(slugA, { phone: '655777888', consent: false })).rejects.toThrow('aviso legal');
+    await db.exec('reset role');
+    expect((await db.query('select * from public.requests where workshop_id=$1', [workshopA])).rows.length).toBe(before);
   });
   it('una matrícula de otro cliente no revela su titularidad: se acepta como cualquier otra, sin vincularla ni tocar al dueño real, y consume el límite por IP', async () => {
     // Codex adversarial review: raising "pertenece a otro cliente" let an

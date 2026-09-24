@@ -12,6 +12,7 @@ import { AuthScreen } from './auth-screen';
 import { Badge, dateLabel, Empty, Field, initials, Modal } from './ui';
 import { AppointmentEditor, CustomerEditor, Settings, VehicleEditor } from './editors';
 import { Resources } from './resources';
+import { Hours } from './hours';
 import { Team } from './team';
 import { GettingStarted } from './getting-started';
 import { defaultQuery, PAGE_SIZE } from '@/lib/queries';
@@ -268,7 +269,7 @@ export function Workspace() {
   {page === 'appointments' && <section className="card"><div className="list-toolbar"><div><h2>Agenda del taller</h2><p className="muted">Zona horaria: {state.workshop.timezone}</p></div><button className="button primary" onClick={() => setEditor({ type: 'appointment' })}><Plus size={16}/>Nueva cita</button></div>{state.appointments.length ? (state.page_info?.ids ?? []).flatMap(id => state.appointments.filter(a => a.id === id)).map(appointmentCard) : <Empty title="Tu agenda está lista">Crea una solicitud y asígnale su primera cita.</Empty>}</section>}
   {page === 'reception' && <Reception execute={execute} onCreated={() => { navigate('requests'); setFilter('nueva'); setNotice('Solicitud creada con su cliente, vehículo y conversación'); }}/>}
   {page === 'team' && owner && isSupabaseMode && <Team state={state}/>}
-  {page === 'settings' && owner && <><Settings key={state.workshop.version} state={state} execute={execute}/><Resources state={state} execute={execute}/></>}
+  {page === 'settings' && owner && <><Settings key={state.workshop.version} state={state} execute={execute}/><Hours state={state} execute={execute}/><Resources state={state} execute={execute}/></>}
   {dataLoading && <p role="status" className="data-loading">Actualizando…</p>}
   {['requests','customers','vehicles','conversations','appointments'].includes(page) && state.page_info?.view === page && <div className="pagination"><button className="button" disabled={offset === 0 || dataLoading} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}>Anterior</button><span>{state.page_info.total ? offset + 1 : 0}–{Math.min(offset + PAGE_SIZE, state.page_info.total)} de {state.page_info.total}</span><button className="button" disabled={offset + PAGE_SIZE >= state.page_info.total || dataLoading} onClick={() => setOffset(offset + PAGE_SIZE)}>Siguiente</button></div>}
   <footer className="footer"><span>TALLERIA · Tu taller, en orden.</span><span>{isSupabaseMode ? 'Datos de tu taller' : 'Prototipo · Recepción simulada'}</span></footer></main></div>

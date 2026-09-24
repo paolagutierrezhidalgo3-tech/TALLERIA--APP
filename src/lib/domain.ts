@@ -18,24 +18,30 @@ export const intakeSchema = z.object({
 });
 export type Intake = z.infer<typeof intakeSchema>;
 export interface Message { role: 'assistant' | 'user'; content: string }
-export interface Workshop { version?: number; slug?: string; id: string; name: string; phone: string; address: string; hours: string; timezone: string; appointment_minutes: number }
+export interface Workshop { version?: number; hours_version?: number; slug?: string; id: string; name: string; phone: string; address: string; hours: string; timezone: string; appointment_minutes: number }
 export interface Customer { version?: number; phone_e164?: string | null; id: string; workshop_id: string; name: string; phone: string; notes: string }
 export interface Vehicle { version?: number; id: string; workshop_id: string; customer_id: string; brand: string; model: string; plate: string }
 export interface Conversation { id: string; workshop_id: string; messages: Message[]; channel: 'simulator' | 'public'; created_at: string }
-export interface ServiceRequest { version?: number; id: string; workshop_id: string; customer_id: string; vehicle_id: string; conversation_id: string; reason: string; availability: string; notes: string; status: RequestStatus; created_at: string }
+export interface ServiceRequest { version?: number; consent_at?: string | null; id: string; workshop_id: string; customer_id: string; vehicle_id: string; conversation_id: string; reason: string; availability: string; notes: string; status: RequestStatus; created_at: string }
 export interface Appointment { version?: number; resource_id?: string; id: string; workshop_id: string; request_id: string; starts_at: string; duration_minutes: number; status: 'scheduled' | 'completed' | 'cancelled'; notes: string }
 export interface Resource { id: string; workshop_id: string; name: string; kind: 'bay' | 'mechanic' | 'lift'; active: boolean; version?: number }
 export interface AuditEvent { id: string; workshop_id: string; user_id: string | null; action: string; entity_type: string; entity_id: string; created_at: string; metadata?: Record<string, unknown> }
-export interface State { schema_version?: number; role?: 'owner' | 'staff'; user_id?: string; resources?: Resource[]; audit?: AuditEvent[]; metrics?: { new_requests: number; upcoming: number; pending_customers: number; completed: number }; page_info?: { view: string; offset: number; total: number; ids: string[] }; customer_counts?: Record<string, { vehicles: number; requests: number }>; workshop: Workshop; customers: Customer[]; vehicles: Vehicle[]; conversations: Conversation[]; requests: ServiceRequest[]; appointments: Appointment[] }
+// day_of_week is ISO: 1=lunes .. 7=domingo. A day with no ranges is closed.
+export interface WorkshopHourRange { day_of_week: number; opens_at: string; closes_at: string }
+export interface WorkshopHourException { version?: number; id: string; workshop_id: string; exception_date: string; closed: boolean; opens_at: string | null; closes_at: string | null }
+export interface State { schema_version?: number; role?: 'owner' | 'staff'; user_id?: string; resources?: Resource[]; hours?: WorkshopHourRange[]; hour_exceptions?: WorkshopHourException[]; audit?: AuditEvent[]; metrics?: { new_requests: number; upcoming: number; pending_customers: number; completed: number }; page_info?: { view: string; offset: number; total: number; ids: string[] }; customer_counts?: Record<string, { vehicles: number; requests: number }>; workshop: Workshop; customers: Customer[]; vehicles: Vehicle[]; conversations: Conversation[]; requests: ServiceRequest[]; appointments: Appointment[] }
 export type Command =
-  | { type: 'intake'; id: string; data: Intake; messages: Message[]; channel?: 'simulator' | 'public' }
+  | { type: 'intake'; id: string; data: Intake; messages: Message[]; channel?: 'simulator' | 'public'; consent?: boolean }
   | { type: 'status'; version?: number; id: string; status: RequestStatus }
   | { type: 'appointment'; version?: number; request_version?: number; resource_id?: string; id: string; request_id: string; starts_at: string; duration_minutes: number; notes: string }
   | { type: 'appointment_status'; version?: number; request_version?: number; id: string; status: Appointment['status'] }
   | { type: 'customer'; customer: Customer }
   | { type: 'vehicle'; vehicle: Vehicle }
   | { type: 'settings'; workshop: Workshop }
-  | { type: 'resource'; resource: Resource };
+  | { type: 'resource'; resource: Resource }
+  | { type: 'workshop_hours'; hours_version?: number; ranges: WorkshopHourRange[] }
+  | { type: 'workshop_hour_exception'; exception: WorkshopHourException }
+  | { type: 'workshop_hour_exception_delete'; id: string; version?: number };
 
 // A workshop with no customers and no requests yet has nothing for the
 // dashboard to show; the caller uses this to switch to a first-run guide
@@ -44,16 +50,70 @@ export function isWorkshopEmpty(state: State): boolean {
   return state.customers.length === 0 && state.requests.length === 0;
 }
 
+const ownerOnlyCommands = new Set<Command['type']>(['settings', 'resource', 'workshop_hours', 'workshop_hour_exception', 'workshop_hour_exception_delete']);
+// The calendar date and ISO weekday (1=lunes..7=domingo) an instant falls on
+// in a given IANA timezone. Never used for time-of-day comparisons -- those
+// go through zonedTimeToUtc below instead, so a DST change can't make a
+// later instant format as an earlier-looking wall-clock string.
+function localDateParts(date: Date, timeZone: string): { date: string; day_of_week: number } {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
+  const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+  const isoDay: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, day_of_week: isoDay[parts.weekday] };
+}
+function offsetMsAt(instant: number, timeZone: string): number {
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const p = Object.fromEntries(fmt.formatToParts(new Date(instant)).map(x => [x.type, x.value]));
+  const hour = p.hour === '24' ? 0 : Number(p.hour);
+  const asIfUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), hour, Number(p.minute), Number(p.second));
+  return asIfUtc - instant;
+}
+// Mirrors is_within_business_hours in PostgreSQL: resolves a wall-clock
+// "HH:MM on this calendar date, in this timezone" into the real UTC instant
+// it refers to. Two passes because the timezone's own offset can itself
+// depend on the answer (near a DST transition) -- the same double-guess
+// idiom libraries like date-fns-tz use for zonedTimeToUtc.
+function zonedTimeToUtc(isoDate: string, time: string, timeZone: string): number {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const [hh, mm] = time.split(':').map(Number);
+  const guess = Date.UTC(y, m - 1, d, hh, mm);
+  return guess - offsetMsAt(guess - offsetMsAt(guess, timeZone), timeZone);
+}
+// A workshop that never configured structured hours has none of these
+// ranges, so it stays unrestricted, exactly like the free-text hours field
+// always was.
+function isWithinBusinessHours(s: State, start: Date, durationMinutes: number): boolean {
+  const hours = s.hours ?? [];
+  if (hours.length === 0) return true;
+  const tz = s.workshop.timezone;
+  const startMs = start.getTime();
+  const endMs = startMs + durationMinutes * 60000;
+  const from = localDateParts(start, tz);
+  // Ranges never span midnight, so an appointment crossing into the next
+  // local day can never be fully inside one and is rejected outright.
+  if (from.date !== localDateParts(new Date(endMs), tz).date) return false;
+  const exception = (s.hour_exceptions ?? []).find(e => e.exception_date === from.date);
+  if (exception) {
+    if (exception.closed || !exception.opens_at || !exception.closes_at) return false;
+    return startMs >= zonedTimeToUtc(from.date, exception.opens_at, tz) && endMs <= zonedTimeToUtc(from.date, exception.closes_at, tz);
+  }
+  return hours.some(h => h.day_of_week === from.day_of_week && startMs >= zonedTimeToUtc(from.date, h.opens_at, tz) && endMs <= zonedTimeToUtc(from.date, h.closes_at, tz));
+}
 export function applyCommand(current: State, command: Command, now = new Date()): State {
   const s = structuredClone(current);
   const workshop_id = s.workshop.id;
-  if ((command.type === 'settings' || command.type === 'resource') && s.role === 'staff') throw new Error('Solo el propietario puede realizar esta operación.');
+  if (ownerOnlyCommands.has(command.type) && s.role === 'staff') throw new Error('Solo el propietario puede realizar esta operación.');
   const recent = (s.audit ?? []).filter(a => a.user_id === (s.user_id ?? 'demo-owner') && new Date(a.created_at).getTime() > now.getTime() - 60000);
   if (command.type === 'intake' && s.requests.some(r => r.id === command.id)) return s;
   if (recent.length >= 100 || command.type === 'intake' && recent.filter(a => a.action === 'intake').length >= 15) throw new Error('Has realizado demasiadas operaciones. Espera un minuto y vuelve a intentarlo.');
   const checkVersion = (old: { version?: number } | undefined, value: { version?: number }) => { if (old && (old.version ?? 1) !== value.version) throw new Error('Este registro ha cambiado. Actualiza la vista antes de guardar.'); };
   if (command.type === 'intake') {
     if (s.requests.some(r => r.id === command.id)) return s;
+    // Mirrors public_intake's own check: the public link's consent
+    // checkbox is a real required field, not a bot heuristic, so a public
+    // submission without it is rejected the same way a missing name would
+    // be. Manual/staff intake (the default channel) never needed it.
+    if (command.channel === 'public' && !command.consent) throw new Error('Debes aceptar el aviso legal para continuar.');
     const d = intakeSchema.parse(command.data);
     let customer = s.customers.find(c => tryNormalizePhone(c.phone) === normalizePhone(d.phone));
     if (!customer) { customer = { id: crypto.randomUUID(), workshop_id, name: d.name, phone: d.phone, phone_e164: d.phone, notes: '', version: 1 }; s.customers.push(customer); }
@@ -66,7 +126,7 @@ export function applyCommand(current: State, command: Command, now = new Date())
     }
     const conversation_id = crypto.randomUUID();
     s.conversations.unshift({ id: conversation_id, workshop_id, messages: command.messages, channel: command.channel ?? 'simulator', created_at: now.toISOString() });
-    s.requests.unshift({ version: 1, id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: d.availability, notes: d.notes, status: 'nueva', created_at: now.toISOString() });
+    s.requests.unshift({ version: 1, id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: d.availability, notes: d.notes, status: 'nueva', created_at: now.toISOString(), consent_at: command.channel === 'public' ? now.toISOString() : null });
   }
   if (command.type === 'status') {
     const request = s.requests.find(r => r.id === command.id);
@@ -85,6 +145,7 @@ export function applyCommand(current: State, command: Command, now = new Date())
     const start = new Date(command.starts_at).getTime();
     if (!Number.isFinite(start) || start <= now.getTime()) throw new Error('Selecciona una fecha y hora futuras.');
     if (!Number.isInteger(command.duration_minutes) || command.duration_minutes < 15 || command.duration_minutes > 480) throw new Error('La duración debe estar entre 15 y 480 minutos.');
+    if (!isWithinBusinessHours(s, new Date(start), command.duration_minutes)) throw new Error('La cita debe estar dentro del horario configurado del taller.');
     if (s.appointments.some(a => a.id !== command.id && a.request_id === request.id && a.status === 'scheduled')) throw new Error('Esta solicitud ya tiene una cita activa.');
     if (s.appointments.some(a => a.id !== command.id && a.status === 'scheduled' && a.resource_id === resource_id && start < new Date(a.starts_at).getTime() + a.duration_minutes * 60000 && start + command.duration_minutes * 60000 > new Date(a.starts_at).getTime())) throw new Error('Ese horario coincide con otra cita del mismo recurso. Elige otro horario o recurso.');
     const existing = s.appointments.find(a => a.id === command.id);
@@ -141,7 +202,41 @@ export function applyCommand(current: State, command: Command, now = new Date())
     if (!r.active && !resources.some(item => item.id !== r.id && item.active)) throw new Error('Debe quedar al menos un recurso activo.');
     s.resources = [...resources.filter(item => item.id !== r.id), { ...r, name: r.name.trim(), version: (old?.version ?? 0) + 1 }];
   }
-  const entity = command.type === 'customer' ? command.customer.id : command.type === 'vehicle' ? command.vehicle.id : command.type === 'settings' ? workshop_id : command.type === 'resource' ? command.resource.id : command.id;
-  s.audit = [{ id: crypto.randomUUID(), workshop_id, user_id: s.user_id ?? 'demo-owner', action: command.type, entity_type: command.type === 'intake' || command.type === 'status' ? 'request' : command.type === 'appointment_status' ? 'appointment' : command.type, entity_id: entity, created_at: now.toISOString() }, ...(s.audit ?? [])].slice(0, 1000);
+  if (command.type === 'workshop_hours') {
+    const ranges = command.ranges;
+    if (ranges.length > 30) throw new Error('El horario no es válido.');
+    // Its own counter, separate from workshop.version: replacing the weekly
+    // schedule must not remount (and discard unsaved edits in) the settings
+    // form, which is keyed by workshop.version.
+    if ((s.workshop.hours_version ?? 1) !== command.hours_version) throw new Error('Este registro ha cambiado. Actualiza la vista antes de guardar.');
+    for (const r of ranges) {
+      if (!Number.isInteger(r.day_of_week) || r.day_of_week < 1 || r.day_of_week > 7) throw new Error('El horario no es válido.');
+      if (!/^\d{2}:\d{2}$/.test(r.opens_at) || !/^\d{2}:\d{2}$/.test(r.closes_at) || r.closes_at <= r.opens_at) throw new Error('El horario no es válido.');
+    }
+    const seen = new Set(ranges.map(r => r.day_of_week + '|' + r.opens_at + '|' + r.closes_at));
+    if (seen.size !== ranges.length) throw new Error('Hay horarios duplicados.');
+    s.hours = ranges.map(r => ({ ...r }));
+    s.workshop = { ...s.workshop, hours_version: (s.workshop.hours_version ?? 1) + 1 };
+  }
+  if (command.type === 'workshop_hour_exception') {
+    const e = command.exception;
+    if (e.workshop_id !== workshop_id) throw new Error('Taller no válido.');
+    const old = (s.hour_exceptions ?? []).find(item => item.id === e.id);
+    checkVersion(old, e);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.exception_date)) throw new Error('Revisa la fecha de la excepción.');
+    if (!e.closed && (!e.opens_at || !e.closes_at || e.closes_at <= e.opens_at)) throw new Error('Revisa el horario de la excepción.');
+    if ((s.hour_exceptions ?? []).some(item => item.id !== e.id && item.exception_date === e.exception_date)) throw new Error('Ya existe una excepción para esa fecha.');
+    const record: WorkshopHourException = { id: e.id, workshop_id, exception_date: e.exception_date, closed: e.closed, opens_at: e.closed ? null : e.opens_at, closes_at: e.closed ? null : e.closes_at, version: (old?.version ?? 0) + 1 };
+    s.hour_exceptions = [...(s.hour_exceptions ?? []).filter(item => item.id !== e.id), record];
+  }
+  if (command.type === 'workshop_hour_exception_delete') {
+    const old = (s.hour_exceptions ?? []).find(item => item.id === command.id);
+    if (!old) throw new Error('La excepción ya no existe.');
+    checkVersion(old, { version: command.version });
+    s.hour_exceptions = (s.hour_exceptions ?? []).filter(item => item.id !== command.id);
+  }
+  const entity = command.type === 'customer' ? command.customer.id : command.type === 'vehicle' ? command.vehicle.id : command.type === 'settings' || command.type === 'workshop_hours' ? workshop_id : command.type === 'resource' ? command.resource.id : command.type === 'workshop_hour_exception' ? command.exception.id : command.id;
+  const entityType = command.type === 'intake' || command.type === 'status' ? 'request' : command.type === 'appointment_status' ? 'appointment' : command.type === 'workshop_hours' ? 'workshop' : command.type === 'workshop_hour_exception' || command.type === 'workshop_hour_exception_delete' ? 'workshop_hour_exception' : command.type;
+  s.audit = [{ id: crypto.randomUUID(), workshop_id, user_id: s.user_id ?? 'demo-owner', action: command.type, entity_type: entityType, entity_id: entity, created_at: now.toISOString() }, ...(s.audit ?? [])].slice(0, 1000);
   return s;
 }

@@ -20,7 +20,7 @@ export function publicDemoWorkshop(slug: string): PublicWorkshopInfo | null {
   const { name, address, hours } = state.workshop;
   return { name, address, hours };
 }
-export async function publicDemoIntake(slug: string, submission: IntakeSubmission): Promise<boolean> {
+export async function publicDemoIntake(slug: string, submission: IntakeSubmission, consent: boolean): Promise<boolean> {
   // Same read/modify/write serialization as DemoRepository.execute(): the
   // dashboard can be open in one tab while a customer submits through the
   // public link in another, and without this lock the later write of either
@@ -28,7 +28,7 @@ export async function publicDemoIntake(slug: string, submission: IntakeSubmissio
   const save = () => {
     const state = readDemoState();
     if (!state || state.workshop.slug !== slug) return false;
-    const command: Command = { type: 'intake', ...submission, channel: 'public' };
+    const command: Command = { type: 'intake', ...submission, channel: 'public', consent };
     const next = applyCommand(state, command);
     localStorage.setItem(KEY, JSON.stringify(next));
     return true;
