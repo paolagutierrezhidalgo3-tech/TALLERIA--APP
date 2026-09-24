@@ -70,14 +70,37 @@ function offsetMsAt(instant: number, timeZone: string): number {
 }
 // Mirrors is_within_business_hours in PostgreSQL: resolves a wall-clock
 // "HH:MM on this calendar date, in this timezone" into the real UTC instant
-// it refers to. Two passes because the timezone's own offset can itself
-// depend on the answer (near a DST transition) -- the same double-guess
-// idiom libraries like date-fns-tz use for zonedTimeToUtc.
+// it refers to. A local time near an offset change can be either ambiguous
+// (repeated, e.g. 02:30 the night the clocks go back) or nonexistent
+// (skipped, e.g. 02:30 the night they go forward); PostgreSQL's "timestamp
+// AT TIME ZONE" resolves both cases to whichever of the two candidate
+// offsets is algebraically smaller, so this finds the two offsets actually
+// in effect close to this date -- not assumed, and not sampled from fixed
+// reference months, since a change can fall outside any such sample
+// (Morocco suspends DST for Ramadan on a date that isn't fixed year to
+// year) -- and picks whichever one round-trips back to the requested
+// wall-clock time, falling back to the smaller one whenever that isn't
+// exactly one of them. Verified
+// against PostgreSQL for Europe/Madrid, America/New_York, Australia/Sydney,
+// Australia/Lord_Howe (30-minute DST) and Africa/Casablanca (its Ramadan
+// offset, adjacent to no fixed calendar month).
 function zonedTimeToUtc(isoDate: string, time: string, timeZone: string): number {
   const [y, m, d] = isoDate.split('-').map(Number);
   const [hh, mm] = time.split(':').map(Number);
   const guess = Date.UTC(y, m - 1, d, hh, mm);
-  return guess - offsetMsAt(guess - offsetMsAt(guess, timeZone), timeZone);
+  const nearbyOffset = offsetMsAt(guess - offsetMsAt(guess, timeZone), timeZone);
+  const dayMs = 86400000;
+  // No real timezone changes its offset twice within a couple of days, so
+  // probing this far to either side of a first, rough guess always lands
+  // clear of the change itself and catches both offsets around it.
+  const before = offsetMsAt(guess - nearbyOffset - 2 * dayMs, timeZone);
+  const after = offsetMsAt(guess - nearbyOffset + 2 * dayMs, timeZone);
+  const lower = Math.min(before, after), upper = Math.max(before, after);
+  const upperCandidate = guess - upper;
+  const upperIsValid = offsetMsAt(upperCandidate, timeZone) === upper;
+  const lowerCandidate = guess - lower;
+  const lowerIsValid = offsetMsAt(lowerCandidate, timeZone) === lower;
+  return upperIsValid && !lowerIsValid ? upperCandidate : lowerCandidate;
 }
 // A workshop that never configured structured hours has none of these
 // ranges, so it stays unrestricted, exactly like the free-text hours field
@@ -188,7 +211,10 @@ export function applyCommand(current: State, command: Command, now = new Date())
     if (w.phone) w.phone = normalizePhone(w.phone);
     if (w.id !== workshop_id || w.name.trim().length < 2 || !Number.isInteger(w.appointment_minutes) || w.appointment_minutes < 15 || w.appointment_minutes > 480) throw new Error('Revisa el nombre y la duración de las citas.');
     try { new Intl.DateTimeFormat('es', { timeZone: w.timezone }); } catch { throw new Error('Zona horaria no válida.'); }
-    s.workshop = { ...w, version: (s.workshop.version ?? 1) + 1 };
+    // The Configuración form can hold a stale copy of the workshop while
+    // horarios saves in the background; keep the counter that command owns
+    // instead of overwriting it with whatever this form last saw.
+    s.workshop = { ...w, version: (s.workshop.version ?? 1) + 1, hours_version: s.workshop.hours_version };
   }
   if (command.type === 'resource') {
     const r = command.resource;
@@ -222,6 +248,11 @@ export function applyCommand(current: State, command: Command, now = new Date())
     const e = command.exception;
     if (e.workshop_id !== workshop_id) throw new Error('Taller no válido.');
     const old = (s.hour_exceptions ?? []).find(item => item.id === e.id);
+    // e.version only exists once the client has actually loaded a saved
+    // exception; a stale edit/delete race that arrives after it's already
+    // been removed must not be treated as a brand-new creation with that
+    // same id, or it would silently resurrect a closure the owner deleted.
+    if (!old && e.version !== undefined) throw new Error('La excepción ya no existe. Actualiza la vista.');
     checkVersion(old, e);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(e.exception_date)) throw new Error('Revisa la fecha de la excepción.');
     if (!e.closed && (!e.opens_at || !e.closes_at || e.closes_at <= e.opens_at)) throw new Error('Revisa el horario de la excepción.');

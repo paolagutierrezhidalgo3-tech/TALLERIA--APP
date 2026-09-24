@@ -1,7 +1,7 @@
 import { applyCommand, type State } from './domain';
 
 export function createDemo(): State {
-  let state: State = { workshop: { id: 'b87fa1b8-c8c5-4612-8e89-a35c1b258621', name: 'Taller Motor Norte', phone: '910 000 000', address: 'Calle del Motor, 24 · Madrid', hours: 'L–V 09:00–14:00 y 16:00–19:00', timezone: 'Europe/Madrid', appointment_minutes: 60 }, customers: [], vehicles: [], conversations: [], requests: [], appointments: [] };
+  let state: State = { workshop: { id: 'b87fa1b8-c8c5-4612-8e89-a35c1b258621', name: 'Taller Motor Norte', phone: '910 000 000', address: 'Calle del Motor, 24 · Madrid', hours: 'L–V 09:00–14:00 y 16:00–19:00', timezone: 'Europe/Madrid', appointment_minutes: 60, hours_version: 1 }, customers: [], vehicles: [], conversations: [], requests: [], appointments: [] };
   const examples = [
     ['Lucía Martín', '600 000 101', 'Volkswagen', 'Golf', '1234BCD', 'Ruido al frenar en la rueda delantera', 'Mañanas, a partir de las 10', 'El ruido comenzó hace dos días.'],
     ['Carlos Ruiz', '600 000 102', 'SEAT', 'León', '5678FGH', 'Revisión anual y cambio de aceite', 'Esta semana por la tarde', 'Prefiere dejar el coche y recogerlo después.'],

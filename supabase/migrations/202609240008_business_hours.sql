@@ -276,6 +276,11 @@ begin
     if (d->>'workshop_id')::uuid is distinct from p_workshop_id then raise exception 'Taller no válido.'; end if;
     if jsonb_typeof(d->'closed') is distinct from 'boolean' then raise exception 'Revisa los datos de la excepción.'; end if;
     select version into current_version from public.workshop_hour_exceptions where workshop_id=p_workshop_id and id=item_id;
+    -- d->'version' is only present once the client has loaded a saved
+    -- exception; a stale edit/delete race that arrives after it's already
+    -- been removed must not be treated as a brand-new creation with that
+    -- same id, or it would silently resurrect a closure the owner deleted.
+    if current_version is null and (d->'version') is not null then raise exception 'La excepción ya no existe. Actualiza la vista.'; end if;
     if current_version is not null and current_version is distinct from (d->>'version')::integer then raise exception 'Este registro ha cambiado. Actualiza la vista antes de guardar.'; end if;
     if exists(select 1 from public.workshop_hour_exceptions where workshop_id=p_workshop_id and id<>item_id and exception_date=(d->>'exception_date')::date) then raise exception 'Ya existe una excepción para esa fecha.'; end if;
     if current_version is null then
@@ -316,12 +321,17 @@ grant execute on function public.execute_command(uuid,jsonb) to authenticated;
 create or replace function public.workspace_snapshot(p_workshop_id uuid,p_view text default 'dashboard',p_offset integer default 0,p_search text default '',p_status text default 'all') returns jsonb
 language plpgsql stable security invoker set search_path='' as $$
 declare
-  actor_role text; q text := public.search_text(coalesce(p_search,''));
+  actor_role text; q text := public.search_text(coalesce(p_search,'')); workshop_today date;
   ids uuid[] := '{}'; reqs uuid[] := '{}'; custs uuid[] := '{}'; vehs uuid[] := '{}'; convs uuid[] := '{}'; apps uuid[] := '{}'; total bigint := 0;
 begin
   select role into actor_role from public.workshop_members where workshop_id=p_workshop_id and user_id=auth.uid();
   if actor_role is null then raise exception 'No tienes acceso a este taller.' using errcode='42501'; end if;
   if p_view not in ('dashboard','requests','customers','vehicles','conversations','appointments','reception','settings') or p_offset is null or p_offset<0 or p_offset>1000000 or length(q)>120 then raise exception 'La consulta no es válida.'; end if;
+  -- "Upcoming" must follow the workshop's own calendar date, not the
+  -- database session's, or an exception that's still today for the
+  -- workshop can disappear from this list (though it keeps applying when
+  -- booking) while the session is in a timezone that's already tomorrow.
+  select (now() at time zone timezone)::date into workshop_today from public.workshops where id=p_workshop_id;
   if p_view='requests' then
     select count(*) into total from public.requests r join public.customers c on c.workshop_id=r.workshop_id and c.id=r.customer_id join public.vehicles v on v.workshop_id=r.workshop_id and v.id=r.vehicle_id where r.workshop_id=p_workshop_id and (p_status='all' or r.status=p_status) and strpos(public.search_text(r.reason||' '||c.name||' '||c.phone||' '||v.plate),q)>0;
     select coalesce(array_agg(id),'{}'::uuid[]) into ids from (select r.id from public.requests r join public.customers c on c.workshop_id=r.workshop_id and c.id=r.customer_id join public.vehicles v on v.workshop_id=r.workshop_id and v.id=r.vehicle_id where r.workshop_id=p_workshop_id and (p_status='all' or r.status=p_status) and strpos(public.search_text(r.reason||' '||c.name||' '||c.phone||' '||v.plate),q)>0 order by r.created_at desc,r.id limit 25 offset p_offset) page;
@@ -358,7 +368,7 @@ begin
     'workshop',(select to_jsonb(w) from public.workshops w where id=p_workshop_id),
     'resources',(select coalesce(jsonb_agg(to_jsonb(r) order by r.name,r.id),'[]') from public.resources r where workshop_id=p_workshop_id),
     'hours',(select coalesce(jsonb_agg(to_jsonb(h) order by h.day_of_week,h.opens_at),'[]') from public.workshop_hours h where workshop_id=p_workshop_id),
-    'hour_exceptions',(select coalesce(jsonb_agg(to_jsonb(e) order by e.exception_date),'[]') from (select * from public.workshop_hour_exceptions where workshop_id=p_workshop_id and exception_date>=current_date order by exception_date limit 100) e),
+    'hour_exceptions',(select coalesce(jsonb_agg(to_jsonb(e) order by e.exception_date),'[]') from (select * from public.workshop_hour_exceptions where workshop_id=p_workshop_id and exception_date>=workshop_today order by exception_date limit 100) e),
     'requests',(select coalesce(jsonb_agg(to_jsonb(r) order by created_at desc,id),'[]') from public.requests r where workshop_id=p_workshop_id and id=any(reqs)),
     'customers',(select coalesce(jsonb_agg(to_jsonb(c) order by name,id),'[]') from public.customers c where workshop_id=p_workshop_id and id=any(custs)),
     'vehicles',(select coalesce(jsonb_agg(to_jsonb(v) order by brand,id),'[]') from public.vehicles v where workshop_id=p_workshop_id and id=any(vehs)),

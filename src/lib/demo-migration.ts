@@ -47,10 +47,21 @@ function upgradeToV3(source: State): State {
   state.appointments.forEach(a => { a.version ??= 1; a.resource_id ??= state.resources![0].id; });
   return state;
 }
-export function upgradeDemo(source: State): State {
+function upgradeToV4(source: State): State {
   if (source.schema_version === 4) return source;
   const state = structuredClone(upgradeToV3(source));
   state.schema_version = 4;
   state.workshop.slug ??= localSlug(state.workshop.name) || 'taller';
+  return state;
+}
+export function upgradeDemo(source: State): State {
+  if (source.schema_version === 5) return source;
+  const state = structuredClone(upgradeToV4(source));
+  state.schema_version = 5;
+  // Every demo saved before structured business hours existed has no
+  // hours_version at all; the workshop_hours command compares it against
+  // the value the Configuración form last saw, so an uninitialized counter
+  // would reject the very first schedule the owner tries to save.
+  state.workshop.hours_version ??= 1;
   return state;
 }

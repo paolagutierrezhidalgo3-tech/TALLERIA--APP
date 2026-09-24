@@ -398,6 +398,95 @@ describe('Horario estructurado: is_within_business_hours y execute_command', () 
     await execute(workshop, intake('622111003', '1000AAD'));
     await expect(schedule({ starts_at: '2030-03-31T00:30:00Z' })).rejects.toThrow('horario configurado');
   });
+  it('en una hora local ambigua (retraso de reloj) usa el desplazamiento estándar, igual que el motor de demostración en TypeScript', async () => {
+    // 2030-11-03 es el domingo en que America/New_York atrasa el reloj:
+    // 01:00-01:59 local ocurre dos veces (primero en EDT, luego en EST).
+    // PostgreSQL resuelve ambas veces con el desplazamiento estándar
+    // (EST, -05:00): la ventana real del tramo 01:00-02:00 es
+    // [06:00Z, 07:00Z), no [05:00Z, 07:00Z). Debe coincidir con
+    // src/lib/domain.test.ts para el mismo escenario.
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='America/New_York' where id=$1", [workshop]);
+    await asUser(owner);
+    const hours_version = (await db.query<{ hours_version: number }>('select hours_version from public.workshops where id=$1', [workshop])).rows[0].hours_version;
+    await execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 7, opens_at: '01:00', closes_at: '02:00' }] });
+    await execute(workshop, intake('622111004', '1000AAE'));
+    await expect(schedule({ starts_at: '2030-11-03T05:30:00Z', duration_minutes: 15 })).rejects.toThrow('horario configurado');
+    await schedule({ starts_at: '2030-11-03T06:30:00Z', duration_minutes: 15 });
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='Europe/Madrid' where id=$1", [workshop]);
+    await asUser(owner);
+  });
+  it('en una hora local inexistente (adelanto de reloj) no admite ninguna cita en ese tramo', async () => {
+    // 2030-03-10 (domingo) America/New_York adelanta el reloj: 02:00-02:59
+    // local no existe nunca, así que el tramo 02:00-03:00 colapsa a un
+    // único instante real ([07:00Z, 07:00Z)) y ninguna cita cabe. Debe
+    // coincidir con src/lib/domain.test.ts para el mismo escenario.
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='America/New_York' where id=$1", [workshop]);
+    await asUser(owner);
+    const hours_version = (await db.query<{ hours_version: number }>('select hours_version from public.workshops where id=$1', [workshop])).rows[0].hours_version;
+    await execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 7, opens_at: '02:00', closes_at: '03:00' }] });
+    await execute(workshop, intake('622111005', '1000AAF'));
+    await expect(schedule({ starts_at: '2030-03-10T07:00:00Z', duration_minutes: 15 })).rejects.toThrow('horario configurado');
+    await expect(schedule({ starts_at: '2030-03-10T06:30:00Z', duration_minutes: 15 })).rejects.toThrow('horario configurado');
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='Europe/Madrid' where id=$1", [workshop]);
+    await asUser(owner);
+  });
+  it('en una zona con horario de verano de 30 minutos (Lord Howe), el tramo no se desplaza como si fuera de 1 hora', async () => {
+    // Australia/Lord_Howe adelanta el reloj solo 30 minutos (DST +11:00
+    // frente a estándar +10:30). El 7 de enero de 2030 (lunes, isodow 1,
+    // pleno verano austral) el tramo local 09:00-10:00 es
+    // [2030-01-06T22:00Z, 2030-01-06T23:00Z), no [22:30Z, 23:30Z) como
+    // daría asumir una diferencia de 1 hora.
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='Australia/Lord_Howe' where id=$1", [workshop]);
+    await asUser(owner);
+    const hours_version = (await db.query<{ hours_version: number }>('select hours_version from public.workshops where id=$1', [workshop])).rows[0].hours_version;
+    await execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 1, opens_at: '09:00', closes_at: '10:00' }] });
+    await execute(workshop, intake('622111006', '1000AAG'));
+    await schedule({ starts_at: '2030-01-06T22:00:00Z', duration_minutes: 30 });
+    await execute(workshop, intake('622111007', '1000AAH'));
+    await expect(schedule({ starts_at: '2030-01-06T22:45:00Z', duration_minutes: 30 })).rejects.toThrow('horario configurado');
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='Europe/Madrid' where id=$1", [workshop]);
+    await asUser(owner);
+  });
+  it('en una zona que suspende el horario de verano en una fecha móvil (Ramadán), is_within_business_hours no lo calcula a partir de enero/julio', async () => {
+    // Africa/Casablanca observa +01:00 casi todo el año pero lo suspende a
+    // +00:00 durante el Ramadán, una ventana sin mes fijo. El viernes 15 de
+    // marzo de 2024 (histórico, ya pasado, para no depender de una
+    // predicción futura del calendario islámico) cae en esa suspensión: el
+    // tramo local 09:00-10:00 es real [09:00Z, 10:00Z), no [08:00Z, 09:00Z).
+    // is_within_business_hours no exige una fecha futura, así que se
+    // comprueba directamente sin pasar por execute_command/schedule.
+    await asUser(owner);
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='Africa/Casablanca' where id=$1", [workshop]);
+    await asUser(owner);
+    const hours_version = (await db.query<{ hours_version: number }>('select hours_version from public.workshops where id=$1', [workshop])).rows[0].hours_version;
+    await execute(workshop, { type: 'workshop_hours', hours_version, ranges: [{ day_of_week: 5, opens_at: '09:00', closes_at: '10:00' }] });
+    // is_within_business_hours is revoked from authenticated/anon (only
+    // execute_command calls it, with elevated privilege); check it here as
+    // the unrestricted role, same as the migrations that created it.
+    await db.exec('reset role');
+    const within = (await db.query<{ ok: boolean }>("select public.is_within_business_hours($1, '2024-03-15T09:00:00Z'::timestamptz, 15) ok", [workshop])).rows[0].ok;
+    const before = (await db.query<{ ok: boolean }>("select public.is_within_business_hours($1, '2024-03-15T08:00:00Z'::timestamptz, 15) ok", [workshop])).rows[0].ok;
+    expect(within).toBe(true);
+    expect(before).toBe(false);
+    await db.exec('reset role');
+    await db.query("update public.workshops set timezone='Europe/Madrid' where id=$1", [workshop]);
+    await asUser(owner);
+  });
+  it('una edición obsoleta no puede resucitar una excepción ya eliminada', async () => {
+    await asUser(owner);
+    const exceptionId = crypto.randomUUID();
+    await execute(workshop, { type: 'workshop_hour_exception', exception: { id: exceptionId, workshop_id: workshop, exception_date: '2030-07-01', closed: true } });
+    await execute(workshop, { type: 'workshop_hour_exception_delete', id: exceptionId, version: 1 });
+    await expect(execute(workshop, { type: 'workshop_hour_exception', exception: { id: exceptionId, workshop_id: workshop, exception_date: '2030-07-01', closed: false, opens_at: '09:00', closes_at: '10:00', version: 1 } })).rejects.toThrow('ya no existe');
+    expect((await db.query('select * from public.workshop_hour_exceptions where id=$1', [exceptionId])).rows).toHaveLength(0);
+  });
 });
 
 describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada más', () => {
