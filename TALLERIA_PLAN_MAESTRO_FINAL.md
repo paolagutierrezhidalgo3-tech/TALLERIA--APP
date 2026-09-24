@@ -266,26 +266,26 @@ Este archivo debe estar en el repositorio y ser leído al inicio. Su mera presen
 
 Actualizar al finalizar cada sesión significativa y al cerrar cada bloque. Mantener este apartado como el resumen vigente; conservar el historial relevante en el control de versiones.
 
-### Checkpoint actual — 24 de septiembre de 2026 (actualizado, misma sesión, tras 4 rondas de Codex)
+### Checkpoint actual — 24 de septiembre de 2026 (actualizado, misma sesión, tras commit/push)
 
 | Campo | Estado |
 | --- | --- |
 | Bloque actual | Horarios estructurados por taller |
-| Estado | Código implementado y verificado por Codex (4 rondas, sin bloqueantes en la última); **pendiente de commit/push y de aplicar la migración real** |
+| Estado | Código implementado, verificado por Codex (4 rondas, sin bloqueantes en la última) y commiteado/empujado; **solo queda pendiente la activación real de la migración 008** |
 | Alcance confirmado | Horario semanal + excepciones/festivos + bloqueo real de citas fuera de horario + UI owner en Configuración |
 | Línea base | Stack, modos y funciones descritos en las secciones 2–4 |
-| Rama y HEAD comprobados | `main`, HEAD `7af4705`. El código de horarios ya estaba implementado y commiteado en `295cbbe` (bajo `7af4705`) al retomar esta sesión; todas las correcciones de esta sesión están sin commitear en el árbol de trabajo |
+| Rama y HEAD comprobados | `main`, HEAD `7408745` (push confirmado: `fb8e6ca..7408745`). El código de horarios se implementó en `295cbbe`; las correcciones de las 4 rondas de Codex de esta sesión se commitearon en `7408745`, con instrucción explícita del usuario para commit/push |
 | Supabase real | 001–005 aplicadas previamente; 006 aplicada manualmente y verificada; 007 aplicada mediante script seguro y verificada |
 | Consentimiento | `requests.consent_at`; `public_intake` de 7 argumentos; obligatorio en recepción pública; históricos nulos |
 | Automatización de BD | `TALLERIA_DB_URL`, Session Pooler, `db-query.mjs`, `apply-migration.mjs`, CA TLS fijada; no concede permiso para nuevas migraciones |
-| Commit/push histórico confirmado | `fb8e6ca`, fase de recepción pública; `295cbbe`, implementación inicial de horarios estructurados (ya en el repositorio, sin revisión de Codex hasta esta sesión); ninguno de los dos es el cierre de este bloque |
+| Commit/push histórico confirmado | `fb8e6ca`, fase de recepción pública; `295cbbe`, implementación inicial de horarios estructurados; **`7408745`, correcciones de las 4 rondas de Codex sobre horarios estructurados — commit y push confirmados en esta sesión** |
 | Revisiones anteriores | Varias rondas de Codex sobre equipo/auth/recepción pública y correcciones relevantes realizadas |
-| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio (`pnpm run typecheck`) · Lint: limpio (`pnpm run lint`) · Build: correcto (`pnpm run build`). Ejecutados en esta sesión, al final de las 4 rondas, sobre el árbol de trabajo con todas las correcciones aplicadas |
+| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio (`pnpm run typecheck`) · Lint: limpio (`pnpm run lint`) · Build: correcto (`pnpm run build`). Ejecutados antes del commit de cierre, sobre el árbol con todas las correcciones aplicadas |
 | Revisión Codex de horarios | **4 rondas sobre el mismo bloque, resumen en el historial de abajo.** Ronda 1: 2 bloqueantes + 3 menores sobre la implementación de `295cbbe` (todos corregidos). Ronda 2: verificación de esos 5 fixes — encontró un bloqueante nuevo introducido por la propia corrección DST (asumía delta fijo de 1h; rompía Australia/Lord_Howe, que usa 30 min). Ronda 3: verificación del fix de Lord Howe — encontró OTRO caso no cubierto por el muestreo enero/julio (Africa/Casablanca suspende su DST en Ramadán, fecha móvil). Ronda 4 (sobre el algoritmo reescrito de forma genérica, sin muestreo de meses fijos): **sin hallazgos bloqueantes**; 2 menores (test histórico de Casablanca recomendado en vez de omitirlo; un comentario impreciso), ambos corregidos. Sin fugas multi-tenant ni bypass de autorización en ninguna ronda |
-| Nuevas migraciones de horarios | `supabase/migrations/202609240008_business_hours.sql`, ya presente en el repositorio desde `295cbbe`; esta sesión la modificó para corregir el hallazgo bloqueante de excepciones resucitadas y el filtro de fecha del snapshot (el fix de DST fue solo en `src/lib/domain.ts`, el motor TypeScript; el lado SQL usa `AT TIME ZONE` nativo de PostgreSQL y no necesitó cambios). Sigue sin aplicarse a Supabase real. Sin confirmación del usuario para aplicarla |
+| Nuevas migraciones de horarios | `supabase/migrations/202609240008_business_hours.sql`, ya presente en el repositorio desde `295cbbe`, con las correcciones de esta sesión ya commiteadas en `7408745` (excepciones resucitadas; filtro de fecha del snapshot; el fix de DST fue solo en `src/lib/domain.ts`, el motor TypeScript, ya que el lado SQL usa `AT TIME ZONE` nativo y no necesitó cambios). **Sigue sin aplicarse a Supabase real. Sin confirmación del usuario para aplicarla** |
 | Prueba manual pendiente | Recuperación de contraseña de extremo a extremo |
 | Despliegue | Vercel aún no desplegado |
-| Próximo paso exacto | Solicitar al usuario confirmación explícita y separada para (a) el commit/push del bloque y (b) la aplicación de la migración 008 a Supabase real |
+| Próximo paso exacto | Solicitar al usuario confirmación explícita para aplicar la migración 008 a Supabase real; si no se aplica, el bloque queda en "código validado; activación en Supabase real pendiente de confirmación/aplicación" |
 | Después | Notificaciones/email y preparación operativa/despliegue; luego pulido visual/UX |
 
 ### Plantilla de actualización
@@ -341,10 +341,10 @@ Revisión de Codex — 4 rondas sobre el mismo bloque (lección para retomar: un
   Ronda 3 (task-mufj74fm-wefdlc), sobre ese segundo fix: confirmó Lord Howe corregido, pero encontró OTRO caso no cubierto por el muestreo de enero/julio — Africa/Casablanca suspende su horario de verano durante el Ramadán, una ventana de fecha móvil que puede no coincidir con ningún mes fijo. Corregido reescribiendo el resolutor para sondear los desplazamientos reales alrededor de la fecha concreta (±2 días) en vez de muestrear meses fijos, y aplicando el mismo criterio de PostgreSQL confirmado (el desplazamiento numéricamente menor de los dos, en caso de ambigüedad). Verificado manualmente contra PostgreSQL en 6 zonas (Madrid, New York, Sydney, Lord Howe, Casablanca, Chatham), normal/ambiguo/inexistente, 21/21 coincidencias.
   Ronda 4 (task-mufjnn4p-afqlr8), sobre el resolutor reescrito: sin hallazgos bloqueantes. 2 menores — recomendó automatizar la regresión de Casablanca con fechas HISTÓRICAS (2024) en vez de omitir el test por depender de predicciones futuras del calendario islámico (se añadió, con now inyectado en el motor TypeScript y llamando a is_within_business_hours directamente en el lado SQL para evitar la restricción de "cita futura"); y un comentario en domain.ts que sobregeneralizaba la regla (corregido). Sin fugas multi-tenant ni bypass de autorización en ninguna de las 4 rondas.
   Nota operativa: la ronda 4 sufrió un fallo de herramienta (un --resume reanudó por error un hilo de Codex vacío en vez del hilo sustantivo de las rondas 2–3, por una llamada --help previa accidental); no afectó la validez de la revisión porque el prompt de esa ronda ya incluía el contexto completo por escrito, pero conviene verificar el threadId real al usar --resume, no asumir que "el último" es el correcto.
-Commit de cierre confirmado: no
-Push: pendiente
+Commit de cierre confirmado: sí — 7408745, a petición explícita del usuario ("haz commit y push del bloque")
+Push: confirmado — fb8e6ca..7408745 a origin/main
 Despliegue: no realizado
-Bloqueos o limitaciones: ninguno técnico; el commit/push y la aplicación de la migración real requieren confirmación explícita del usuario, no solicitada todavía en esta sesión
-Próximo paso exacto: pedir al usuario confirmación explícita y separada para (a) el commit/push del bloque y (b) la aplicación de la migración 008 a Supabase real
-Actualización de este plan versionada: pendiente de commit junto con el resto del bloque
+Bloqueos o limitaciones: ninguno técnico; la aplicación de la migración 008 a Supabase real requiere confirmación explícita del usuario, no solicitada todavía en esta sesión
+Próximo paso exacto: pedir al usuario confirmación explícita para aplicar la migración 008 a Supabase real
+Actualización de este plan versionada: sí, en el mismo commit 7408745; este cierre de commit/push se documenta en un commit de seguimiento inmediatamente posterior
 ```
