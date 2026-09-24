@@ -7,3 +7,4 @@ coverage/
 .vercel/
 test-results/
 playwright-report/
+Claude outputs/
