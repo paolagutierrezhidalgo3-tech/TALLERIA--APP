@@ -2,9 +2,9 @@
 
 > Documento de continuidad para Claude Code. Leer al iniciar o retomar el proyecto y actualizar al cerrar cada bloque significativo.
 >
-> Fecha de actualización documental: 24 de septiembre de 2026.
+> Fecha de actualización documental: 25 de septiembre de 2026.
 > Repositorio: `paolagutierrezhidalgo3-tech/TALLERIA--APP`.
-> Prioridad actual: terminar horarios estructurados, validarlos y cerrar el bloque mediante el flujo Claude → Codex → correcciones → commit/push → actualización del plan.
+> Prioridad actual: bloque de notificaciones (aviso por correo al owner/staff en solicitudes públicas nuevas) — código validado y revisado por Codex, pendiente de configurar los secretos reales (Resend, Supabase secret key), probarlo de extremo a extremo, y solo entonces commitear/empujar.
 
 ## 1. Propósito y fuentes
 
@@ -91,9 +91,9 @@ Codex ya realizó varias rondas adversariales sobre equipo, autenticación y rec
 
 Preservar esas correcciones y revisar regresiones cuando un cambio afecte a esas áreas. Este historial no equivale a una garantía absoluta de ausencia de defectos ni sustituye la revisión del nuevo bloque de horarios.
 
-## 5. Migraciones 001–009 y Supabase real
+## 5. Migraciones 001–010 y Supabase real
 
-**Las migraciones 001–009 están aplicadas en Supabase real según el estado confirmado.** No quedan pendientes de aplicación por falta de contexto documental.
+**Las migraciones 001–009 están aplicadas en Supabase real según el estado confirmado. La 010 está preparada y probada localmente, pero NO aplicada.**
 
 | Migración | Nombre | Estado en Supabase real y evidencia confirmada |
 | --- | --- | --- |
@@ -106,6 +106,7 @@ Preservar esas correcciones y revisar regresiones cuando un cambio afecte a esas
 | 007 | `public_consent` | Aplicada posteriormente mediante script seguro; verificada en Supabase real |
 | 008 | `business_hours` | **Ya estaba aplicada al retomar esta sesión, en su forma original (sin las correcciones de la revisión de Codex); no se documentó cuándo ni en qué sesión.** Verificado por lectura directa del esquema real |
 | 009 | `business_hours_fixes` | Aplicada el 24 de septiembre de 2026 mediante `apply-migration.mjs --confirm` (ejecutado por el usuario, con confirmación explícita); solo corrige los cuerpos de `execute_command` y `workspace_snapshot`. Verificada por lectura directa: ambas funciones ya contienen las correcciones |
+| 010 | `new_request_notifications` | **Aplicada a Supabase real el 25 de septiembre de 2026**, con confirmación explícita del usuario ("sí, aplica la migración"). Añade `requests.notified_at`, `workshops.notifications_last_sent_at` y la función `claim_public_request_notification` (con su `grant`/`revoke` explícitos). Verificada por lectura directa del esquema real (columnas presentes; función presente, `security_type` `DEFINER`), además de los tests reales contra PGlite en `src/lib/supabase/database.test.ts` |
 
 Los identificadores y nombres anteriores son los confirmados. Consultar el repositorio para las rutas y los nombres completos de archivo; no inferirlos.
 
@@ -185,18 +186,16 @@ Cubrir citas dentro y fuera del horario, citas que terminan después del cierre,
 | --- | --- | --- |
 | A. Base funcional y robustez | Existente, con revisiones y correcciones realizadas | Funciones de la sección 4 y migraciones 001–005 aplicadas; preservar lo construido |
 | B. Recepción Digital pública y consentimiento | Aplicada y verificada en Supabase real | 006 y 007; flujo público real y consentimiento obligatorio; `fb8e6ca` confirmado para recepción pública |
-| C. Horarios estructurados | **En curso — prioridad actual** | Semanal + excepciones/festivos + bloqueo real + UI owner; completar checks, revisión y cierre |
-| D. Notificaciones/email y preparación operativa/despliegue | Posterior a horarios | Concretar un bloque acotado, completar pruebas operativas y preparar el despliegue; Vercel aún no desplegado |
+| C. Horarios estructurados | **Cerrada** | Semanal + excepciones/festivos + bloqueo real + UI owner; commiteada (`7408745`, `2bce298`) y activa en Supabase real (migración 009); prueba manual de recuperación de contraseña superada |
+| D. Notificaciones/email y preparación operativa/despliegue | **Notificaciones: cerrada.** Código validado (tests/typecheck/lint/build), revisado por Codex (6 rondas, sin bloqueantes) y probado de extremo a extremo contra Supabase y Resend reales; migración 010 aplicada. **Pendiente para producción real: verificar un dominio propio en Resend (resend.com/domains) y configurar `NOTIFICATIONS_FROM_EMAIL`** con un remitente de ese dominio — mientras tanto el aviso solo se entrega si el destinatario coincide con la cuenta de Resend en uso, no a los emails reales del equipo del taller. **Despliegue en Vercel: siguiente paso, todavía sin empezar** | Aviso por correo al owner/staff en solicitudes públicas nuevas (alcance acotado: sin canal al cliente, sin WhatsApp); despliegue en Vercel es la siguiente acción de esta fase |
 | E. Pulido visual y UX | Después de la preparación operativa | Mejorar claridad, consistencia y facilidad de uso sobre funciones estables |
 
 ### Próximas acciones en orden
 
-1. Revisar el trabajo actual de Claude y completar horarios sin duplicar cambios en curso.
-2. Ejecutar tests/typecheck/lint/build, obtener revisión independiente de Codex y corregir bloqueantes.
-3. Si hay una nueva migración, obtener confirmación explícita antes de aplicarla a Supabase real y verificarla después. Distinguir cierre del código de activación real.
-4. Hacer commit/push y actualizar este plan con evidencia y pendientes reales.
-5. Abordar notificaciones/email y preparación operativa/despliegue. (La prueba manual completa de recuperación de contraseña ya se realizó el 25 de septiembre de 2026; ver la sección 12.)
-6. Realizar el pulido visual/UX después.
+1. ~~Configurar `SUPABASE_SECRET_KEY` y `RESEND_API_KEY` y probar el aviso de extremo a extremo contra Supabase real.~~ Hecho el 25 de septiembre de 2026; migración 010 aplicada; commit/push del bloque completado.
+2. Verificar un dominio propio en Resend (resend.com/domains) y configurar `NOTIFICATIONS_FROM_EMAIL` con un remitente de ese dominio, para que el aviso llegue a los emails reales del equipo del taller (no solo a la cuenta de Resend en uso).
+3. Preparar el despliegue en Vercel (dominio, variables de entorno reales incluidas las de este bloque, criterios operativos) como siguiente acción de la fase D.
+4. Realizar el pulido visual/UX después.
 
 El detalle de proveedores, canales de notificación, configuración de despliegue y criterios operativos se concretará en su bloque. No considerar esas capacidades implementadas ni desplegadas por aparecer en el roadmap.
 
@@ -270,25 +269,28 @@ Este archivo debe estar en el repositorio y ser leído al inicio. Su mera presen
 
 Actualizar al finalizar cada sesión significativa y al cerrar cada bloque. Mantener este apartado como el resumen vigente; conservar el historial relevante en el control de versiones.
 
-### Checkpoint actual — 25 de septiembre de 2026 (prueba manual de recuperación de contraseña superada)
+### Checkpoint actual — 25 de septiembre de 2026 (bloque de notificaciones: cerrado)
 
 | Campo | Estado |
 | --- | --- |
-| Bloque actual | Horarios estructurados por taller — **cerrado**. Único pendiente general del roadmap: la prueba manual de recuperación de contraseña, ya realizada (ver abajo) |
-| Estado | Código implementado, verificado por Codex (4 rondas, sin bloqueantes en la última), commiteado/empujado, y las correcciones activas en Supabase real (verificado por lectura directa del esquema). Prueba manual pendiente del roadmap (recuperación de contraseña) **superada** |
-| Alcance confirmado | Horario semanal + excepciones/festivos + bloqueo real de citas fuera de horario + UI owner en Configuración |
+| Bloque actual | Notificaciones — aviso por correo al owner/staff cuando llega una solicitud pública nueva. **Cerrado**: código validado, revisado por Codex, probado de extremo a extremo contra Supabase y Resend reales, migración aplicada, commiteado y empujado |
+| Estado | Implementado, con tests/typecheck/lint/build en verde, 6 rondas de revisión independiente de Codex sin hallazgos pendientes, y prueba real de extremo a extremo superada (resumen en el historial de abajo) |
+| Decisiones de producto confirmadas para este bloque | Solo se notifica al owner/staff del taller, no al cliente; proveedor de correo: Resend; contenido del correo deliberadamente mínimo, sin ningún dato del cliente (nombre/teléfono/matrícula/motivo) |
+| Alcance confirmado (bloques anteriores) | Horarios estructurados: **cerrado** (commiteado y activo en Supabase real). Recuperación de contraseña: prueba manual superada el 25 de septiembre de 2026 |
 | Línea base | Stack, modos y funciones descritos en las secciones 2–4 |
-| Rama y HEAD comprobados | `main`, HEAD `2bce298` tras push. No hay cambios de código pendientes de commitear al cierre de esta actualización (solo esta edición del plan) |
-| Supabase real | 001–005 aplicadas previamente; 006 y 007 verificadas mediante flujo real; 008 ya estaba aplicada desde antes de esta sesión (divergencia detectada y documentada en la sección 5); 009 aplicada y verificada por el usuario en esta sesión |
+| Rama y HEAD comprobados | `main`, HEAD `ed48f8a` (commit de código de este cierre) tras push |
+| Archivos principales del bloque | `src/lib/notifications.ts`, `src/lib/notifications.test.ts`, `src/lib/supabase/admin.ts`, `src/app/api/notify-new-request/route.ts`, cambios en `src/components/public-reception.tsx`, `supabase/migrations/202609250010_new_request_notifications.sql`, cambios en `.env.example`, cambios en `src/lib/supabase/database.test.ts` (tests reales contra PGlite para `claim_public_request_notification`, incluida verificación de permisos por rol) |
+| Secretos del bloque | `SUPABASE_SECRET_KEY` y `RESEND_API_KEY` configurados en `.env.local` y verificados contra Supabase/Resend reales. `NOTIFICATIONS_FROM_EMAIL` sin configurar todavía — **pendiente para producción real: verificar un dominio propio en Resend (resend.com/domains) y configurarla con un remitente de ese dominio**; mientras tanto el envío por defecto (`onboarding@resend.dev`) solo entrega al correo de la propia cuenta de Resend, no a los emails reales del equipo del taller |
+| Supabase real | 001–010 aplicadas y verificadas (ver sección 5) |
 | Consentimiento | `requests.consent_at`; `public_intake` de 7 argumentos; obligatorio en recepción pública; históricos nulos |
-| Automatización de BD | `TALLERIA_DB_URL`, Session Pooler, `db-query.mjs`, `apply-migration.mjs`, CA TLS fijada; no concede permiso para nuevas migraciones |
-| Commit/push histórico confirmado | `fb8e6ca` (recepción pública), `295cbbe` (horarios, implementación inicial), `7408745` (correcciones de las 4 rondas de Codex), `b023caf` (checkpoint), `2bce298` (migración 009 + checkpoint) |
-| Revisiones anteriores | Varias rondas de Codex sobre equipo/auth/recepción pública, y las 4 rondas sobre horarios estructurados de esta sesión (resumen en el historial de abajo) |
-| Checks del bloque de horarios | Tests: 147/147 (`pnpm run test`) · Typecheck: limpio · Lint: limpio · Build: correcto. Ejecutados antes del commit `7408745` |
-| Prueba manual: recuperación de contraseña | **Superada de extremo a extremo, en Supabase real (modo `supabase`, no demo), guiada paso a paso por el usuario en su navegador** (sin extensión Claude in Chrome conectada). Cuenta de prueba desechable `correo-real+test@gmail.com` (alias `+`, nunca la cuenta real del owner): registro → confirmación de correo → cierre de sesión → "¿Olvidaste tu contraseña?" → mensaje genérico sin confirmar si la cuenta existe → enlace de recuperación → evento `PASSWORD_RECOVERY` → pantalla de nueva contraseña → "Contraseña actualizada" → contraseña antigua rechazada, nueva aceptada. Cuenta y taller de prueba borrados después (`DELETE` en cascada desde `workshops`, más `auth.users`), verificado que la cuenta y el taller reales del owner no se tocaron (ids distintos comprobados antes y después de borrar) |
-| Despliegue | Vercel aún no desplegado |
-| Próximo paso exacto | Concretar y acotar el bloque D (notificaciones/email y preparación operativa/despliegue) con el usuario antes de empezar a implementarlo |
-| Después | Notificaciones/email y preparación operativa/despliegue; luego pulido visual/UX |
+| Automatización de BD | `TALLERIA_DB_URL`, Session Pooler, `db-query.mjs`, `apply-migration.mjs`, CA TLS fijada; no concede permiso para nuevas migraciones. Hallazgo de esta sesión: `workshop_members.user_id` tiene una restricción `UNIQUE` — un usuario solo puede pertenecer a un taller a la vez |
+| Commit/push histórico confirmado | `fb8e6ca` (recepción pública), `295cbbe` (horarios, implementación inicial), `7408745` (correcciones de horarios), `b023caf`/`2bce298` (checkpoints y migración 009), `c189337` (prueba de recuperación de contraseña), `ed48f8a` (bloque de notificaciones: código + migración 010, probado de extremo a extremo tras este commit) |
+| Checks del bloque de notificaciones | Tests: 165/165 (`pnpm run test`, incluidas pruebas reales contra PGlite para la RPC de reclamación) · Typecheck: limpio · Lint: limpio · Build: correcto (incluye la nueva ruta `/api/notify-new-request`) |
+| Revisión de Codex del bloque de notificaciones | **6 rondas** sobre el mismo bloque (resumen en el historial de abajo). Encontró y se corrigieron 2 hallazgos bloqueantes reales: (1) el diseño inicial identificaba el taller solo por su slug público, permitiendo generar avisos falsos sin haber creado ninguna solicitud real — corregido exigiendo el id de la propia solicitud, con reclamación atómica e idempotente; (2) el filtro de "canal público" apuntaba a una columna que no existe en `requests` (vive en `conversations`) — habría hecho que nunca se enviara ningún aviso en producción real, sin que los mocks lo detectaran; corregido con una función SQL (`claim_public_request_notification`) verificada con pruebas reales contra PostgreSQL. Última ronda: **sin hallazgos bloqueantes ni menores** |
+| Prueba manual real | Superada el 25 de septiembre de 2026 contra Supabase y Resend reales (detalle en el historial de abajo): reclamo atómico, cooldown y resolución de miembros validados con datos reales; entrega de email confirmada por el usuario mediante un envío directo al email autorizado por Resend (la entrega a los miembros reales del taller queda pendiente de la verificación de dominio en Resend) |
+| Despliegue | Vercel aún no desplegado — siguiente bloque |
+| Próximo paso exacto | Verificar un dominio propio en Resend y configurar `NOTIFICATIONS_FROM_EMAIL`; preparar y ejecutar el despliegue en Vercel (dominio, variables de entorno reales, criterios operativos) |
+| Después | Pulido visual/UX |
 
 ### Plantilla de actualización
 
@@ -375,4 +377,62 @@ Despliegue: no realizado
 Bloqueos o limitaciones: ninguno
 Próximo paso exacto: concretar y acotar con el usuario el bloque D (notificaciones/email y preparación operativa/despliegue) antes de empezar a implementarlo
 Actualización de este plan versionada: pendiente de commit
+```
+
+```text
+Fecha: 25 de septiembre de 2026
+Rama y HEAD comprobados: main, HEAD c189337. El bloque de notificaciones está sin commitear en el árbol de trabajo, a petición explícita del usuario ("vamos a configurar y probar los secretos primero")
+Bloque actual y alcance: Notificaciones -- aviso por correo al owner/staff cuando llega una solicitud pública nueva (decisiones acotadas: solo owner/staff, no el cliente; proveedor Resend; correo mínimo sin datos del cliente)
+Estado: código validado y revisado por Codex; pendiente de secretos, prueba real y commit
+Hecho en esta sesión: implementado el bloque completo; 6 rondas de revisión independiente de Codex sobre el mismo bloque, corrigiendo cada hallazgo antes de pasar a la siguiente ronda (detalle abajo); actualizado este plan (secciones 5, 7 y 12) sin commitear
+Decisiones confirmadas: las 3 decisiones de alcance/proveedor/contenido del correo, ya reflejadas en la sección 12
+Archivos principales: src/lib/notifications.ts, src/lib/notifications.test.ts, src/lib/supabase/admin.ts, src/app/api/notify-new-request/route.ts, src/components/public-reception.tsx, supabase/migrations/202609250010_new_request_notifications.sql, .env.example, src/lib/supabase/database.test.ts
+Pendientes concretos y hallazgos menores: ninguno de los hallazgos de las 6 rondas de Codex queda abierto (la última ronda confirmó explícitamente "no queda ningún hallazgo bloqueante ni menor" tras la corrección de un detalle cosmético de aislamiento entre tests)
+Migraciones preparadas (identificador y finalidad): 202609250010_new_request_notifications.sql -- columnas de reclamación/enfriamiento y la función claim_public_request_notification (con grant explícito a service_role)
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no solicitada ni obtenida en esta sesión; el usuario pidió explícitamente no commitear todavía y configurar/probar los secretos primero
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna en esta sesión; 001-009 siguen como estaban
+Tests: pnpm run test -- 165/165 correctos (incluidas pruebas reales contra PGlite para claim_public_request_notification y la verificación de permisos por rol)
+Typecheck: pnpm run typecheck -- sin errores
+Lint: pnpm run lint -- sin errores
+Build: pnpm run build -- correcto, incluida la nueva ruta /api/notify-new-request
+Pruebas manuales: no realizadas en esta sesión (pendiente: requiere SUPABASE_SECRET_KEY y RESEND_API_KEY configurados, ver sección 12)
+Revisión de Codex -- 6 rondas sobre el mismo bloque (misma lección que con horarios: una primera corrección no es necesariamente la última; verificar con pruebas reales, no solo mocks, cuando la corrección depende de un esquema o infraestructura real):
+  Ronda 1: hallazgo bloqueante -- el diseño identificaba el taller solo por su slug público (dato conocido por cualquier visitante de la página de recepción), permitiendo generar avisos falsos sin haber creado ninguna solicitud real, y pudiendo agotar la ventana de enfriamiento justo antes de una solicitud legítima. Corregido exigiendo el id de la propia solicitud (un UUID generado por el cliente, nunca mostrado públicamente) y una reclamación atómica e idempotente sobre esa solicitud.
+  Ronda 2: hallazgo bloqueante -- el filtro de "canal público" (`.eq('channel','public')`) se aplicaba sobre la tabla `requests`, que no tiene esa columna (vive en `conversations`); en Postgres real la consulta habría fallado, y como el código solo leía `data` sin comprobar `error`, el fallo habría sido silencioso: nunca se habría enviado ningún aviso en producción. Los mocks del test unitario no lo detectaron. Corregido moviendo la reclamación a una función SQL (`claim_public_request_notification`) que hace el join correcto con `conversations`, y añadidas pruebas de integración reales contra PostgreSQL (PGlite) que sí lo habrían detectado.
+  Ronda 3: 2 hallazgos menores -- el permiso de ejecución de la función dependía de privilegios predeterminados de Supabase, no comprobados; corregido con un `grant execute ... to service_role` explícito y una prueba real que cambia de rol y verifica la denegación a anon/authenticated y el acceso de service_role. Los tests de los caminos de error no probaban que fuera el chequeo de `error` (y no una `data` nula) lo que detenía el flujo; corregido dando `data` con un valor válido a la vez que el error en esos tests, y espiando `console.error`.
+  Ronda 4: 4 hallazgos menores de pulido -- un comentario SQL impreciso sobre los privilegios de PUBLIC; los errores de `getUserById` se descartaban en silencio (ahora se registran y se continúa con el resto de miembros); dos títulos de test no describían el escenario que realmente probaban; un comentario en la ruta de API decía "siempre responde 200" sin matizar los 400 por entrada inválida.
+  Ronda 5 (verificación de la ronda 4): al corregir la limpieza de los tests, la primera solución probada (`vi.restoreAllMocks()` en un afterEach) rompió 4 tests porque también borraba el `mockResolvedValue` por defecto de los mocks planos (getUserById, emailsSend), no solo el spy real de console.error. Detectado al ejecutar los tests antes de reportar el fix como terminado; corregido restaurando solo el spy específico.
+  Ronda 6 (cierre): sin hallazgos bloqueantes. Un detalle cosmético (variables de entorno de los tests no restauradas a su valor original entre tests, confirmado explícitamente por Codex como "no un fallo de producción ni de seguridad"); corregido igualmente. Confirmación final explícita: "no queda ningún hallazgo bloqueante ni menor".
+Commit de cierre confirmado: no -- pendiente a petición explícita del usuario
+Push: pendiente
+Despliegue: no realizado
+Bloqueos o limitaciones: ninguno técnico; faltan los secretos reales (SUPABASE_SECRET_KEY, RESEND_API_KEY) para poder probar el bloque de extremo a extremo antes de commitear
+Próximo paso exacto: configurar los secretos en .env.local, probar el flujo completo contra Supabase/Resend reales, y solo si sale bien, pedir confirmación explícita para aplicar la migración 010 y luego commitear/empujar
+Actualización de este plan versionada: pendiente de commit junto con el resto del bloque
+```
+
+```text
+Fecha: 25 de septiembre de 2026
+Rama y HEAD comprobados: main, HEAD c189337 (bloque de notificaciones implementado y revisado por Codex en la sesión anterior, sin commitear a petición del usuario)
+Bloque actual y alcance: Notificaciones -- configuración de los secretos reales, prueba de extremo a extremo contra Supabase y Resend reales, limpieza de los datos de prueba, y cierre del bloque (commit/push)
+Estado: cerrado
+Hecho en esta sesión: guiado al usuario para añadir SUPABASE_SECRET_KEY y RESEND_API_KEY a .env.local sin que los valores aparecieran en el chat (el usuario los pegó directamente en el Bloc de notas, abierto a petición suya); verificados por nombre/longitud sin mostrar valores; detectada y corregida una duplicidad de NEXT_PUBLIC_SUPABASE_URL/PUBLISHABLE_KEY en el archivo (una línea vacía de plantilla y otra con el valor real); aplicada la migración 010 con confirmación explícita y verificada por lectura directa del esquema; primera prueba real de extremo a extremo (solicitud pública real vía la RPC pública public_intake -- llamada directamente, no a través del navegador, por no haber extensión Claude in Chrome conectada -- seguida de la llamada real a /api/notify-new-request) reveló que SUPABASE_SECRET_KEY era inválida ("Invalid API key"); investigado y encontrado que el usuario había pegado por error un sufijo literal ("_SUPABASE"/"_RESEND") junto a ambas claves al copiarlas; corregido por el usuario; segunda prueba real: reclamo atómico, cooldown y resolución de miembros correctos contra Supabase real, pero Resend rechazó el envío (403, política de sandbox: el remitente de pruebas onboarding@resend.dev solo entrega al email de la propia cuenta de Resend, distinto del email de los miembros reales del taller); explorada una vía para probar el envío sin tocar workshop_members del taller real (taller de prueba desechable, vinculando el usuario ya existente cuyo email sí coincide con la cuenta de Resend) -- bloqueada por una restricción real descubierta en esta sesión (UNIQUE(user_id) en workshop_members: un usuario solo puede pertenecer a un taller a la vez), la transacción se revirtió sola sin dejar residuo (verificado); resuelto finalmente con un envío directo a la API de Resend (mismo asunto/cuerpo que usa la app, sin tocar Supabase) solo al email autorizado por Resend -- aceptado por Resend (200) y confirmado recibido por el usuario; identificados uno a uno y eliminados, con confirmación explícita del usuario, los datos de prueba (cliente, vehículo, conversación, solicitud y evento de auditoría) que la primera prueba de intake había dejado en el taller real, verificados eliminados sin afectar ninguna otra fila; ejecutados tests/typecheck/lint/build; actualizado este plan (secciones 5, 7 y 12)
+Decisiones confirmadas: ninguna decisión de producto nueva
+Archivos principales: los mismos del bloque de notificaciones (ver entrada anterior del historial); sin cambios de código en esta sesión más allá de la propia prueba -- solo .env.local (no versionado, nunca mostrado en el chat) y este plan
+Pendientes concretos y hallazgos menores: para producción real falta verificar un dominio propio en Resend (resend.com/domains) y configurar NOTIFICATIONS_FROM_EMAIL con un remitente de ese dominio -- mientras tanto el aviso solo se entrega si el destinatario coincide con la cuenta de Resend en uso, no con los emails reales de los miembros del taller
+Migraciones preparadas (identificador y finalidad): ninguna nueva en esta sesión; se aplicó la 010 ya preparada en la sesión anterior
+Confirmación explícita del usuario para aplicación real (referencia y alcance): "sí, aplica la migración" (migración 010 a Supabase real); "sí, adelante" (intento de taller de prueba desechable, revertido solo por una restricción real de esquema antes de escribir ningún dato, sin necesidad de limpieza); "sí, envía el correo de prueba CON RESEND unicamente a mi email autorizado" (envío directo de prueba, sin tocar Supabase); "sí, bórralos" (limpieza de los datos de prueba dejados en el taller real por la primera prueba de intake)
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: 202609250010_new_request_notifications.sql, aplicada en esta sesión; verificada por lectura directa del esquema real (columnas requests.notified_at y workshops.notifications_last_sent_at presentes; función claim_public_request_notification presente, security_type DEFINER)
+Tests: pnpm run test -- 165/165 correctos
+Typecheck: pnpm run typecheck -- sin errores
+Lint: pnpm run lint -- sin errores
+Build: pnpm run build -- correcto, incluida /api/notify-new-request
+Pruebas manuales: Supabase real (modo supabase, no demo) + Resend real. Solicitud pública real creada vía la RPC pública public_intake (llamada directamente, no a través del navegador, por no haber extensión Claude in Chrome conectada, contra el taller real "Taller Prueba Paola") y aviso disparado vía /api/notify-new-request. Resultado: reclamo atómico, cooldown y resolución de miembros validados con datos reales contra Supabase real; entrega de email a los miembros reales bloqueada por la política de sandbox de la cuenta de Resend en uso (no por ningún fallo del código, confirmado por el mensaje de error de la propia Resend); entrega de email confirmada por separado con un envío directo solo al email autorizado por Resend, aceptado por Resend y recibido y confirmado explícitamente por el usuario. Datos de prueba creados en el taller real durante la prueba de intake, identificados uno a uno y eliminados con confirmación explícita del usuario; verificados eliminados
+Revisión de Codex: no aplica en esta sesión (el bloque ya fue revisado en 6 rondas en la sesión anterior; sin cambios de código en esta sesión)
+Commit de cierre confirmado: sí, a petición explícita del usuario ("haz commit y push de este bloque")
+Push: confirmado
+Despliegue: no realizado
+Bloqueos o limitaciones: para que el aviso llegue a los emails reales de los miembros del taller en producción, falta verificar un dominio propio en Resend y configurar NOTIFICATIONS_FROM_EMAIL (ver pendientes arriba); hallazgo de esquema para tener en cuenta en trabajo futuro: workshop_members.user_id es UNIQUE (un usuario, un taller a la vez)
+Próximo paso exacto: verificar un dominio propio en Resend y configurar NOTIFICATIONS_FROM_EMAIL; preparar y ejecutar el despliegue en Vercel (dominio, variables de entorno reales -- incluidas SUPABASE_SECRET_KEY/RESEND_API_KEY/NOTIFICATIONS_FROM_EMAIL --, criterios operativos)
+Actualización de este plan versionada: sí, en el commit que sigue a este cierre
 ```
