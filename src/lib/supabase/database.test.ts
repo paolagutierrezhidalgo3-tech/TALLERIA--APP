@@ -20,7 +20,7 @@ async function publicIntake(slug: string, opts: { phone?: string; plate?: string
 async function execute(workshop: string, command: unknown) { await db.query('select public.execute_command($1::uuid,$2::jsonb)', [workshop, JSON.stringify(command)]); }
 function intake(phone = '611222333', plate = '1234BCD') { return { type: 'intake', id: crypto.randomUUID(), data: { name: 'Persona Prueba', phone, brand: 'SEAT', model: 'León', plate, reason: 'Revisión de mantenimiento', availability: 'Mañanas', notes: '' }, messages: [{ role: 'user', content: 'Quiero una revisión' }] }; }
 beforeAll(async () => {
-  await db.exec(`create role anon; create role authenticated;
+  await db.exec(`create role anon; create role authenticated; create role service_role;
     create schema auth; create table auth.users(id uuid primary key, email text unique default (gen_random_uuid()::text || '@example.invalid'));
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     grant usage on schema auth to authenticated, anon;
@@ -609,5 +609,60 @@ describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada
     await asAnon('203.0.113.10');
     const other = await publicIntake(slugA, { phone: '656888888' });
     expect(other.accepted).toBe(true);
+  });
+});
+describe('Aviso de solicitud nueva: claim_public_request_notification', () => {
+  // Runs against the real migrations (including 010's join through
+  // conversations for "public channel"), the exact bug an earlier version
+  // of src/lib/notifications.ts's mocked unit tests could not catch:
+  // requests has no channel column, so filtering on one there errors in
+  // real Postgres instead of just not matching.
+  let slugA: string;
+  beforeAll(async () => {
+    await db.exec('reset role');
+    slugA = (await db.query<{ slug: string }>('select slug from public.workshops where id=$1', [workshopA])).rows[0].slug;
+  });
+  async function claim(requestId: string) {
+    await db.exec('reset role');
+    return (await db.query<{ claim_public_request_notification: string | null }>('select public.claim_public_request_notification($1)', [requestId])).rows[0].claim_public_request_notification;
+  }
+  it('reclama una solicitud pública real exactamente una vez, y devuelve el taller correcto', async () => {
+    await asAnon();
+    const { clientId } = await publicIntake(slugA, { phone: '657111000' });
+    const workshopId = await claim(clientId);
+    expect(workshopId).toBe(workshopA);
+    expect(await claim(clientId)).toBeNull();
+  });
+  it('no reclama una solicitud manual/de staff (canal simulator), ni una inexistente', async () => {
+    // Reuses an existing manual-channel request from earlier tests in this
+    // shared database instead of creating a new one through execute(),
+    // which would count against userA's already-exercised rate limit.
+    await db.exec('reset role');
+    const manualId = (await db.query<{ id: string }>(
+      "select r.id from public.requests r join public.conversations c on c.id=r.conversation_id and c.workshop_id=r.workshop_id where r.workshop_id=$1 and c.channel='simulator' limit 1",
+      [workshopA]
+    )).rows[0].id;
+    expect(await claim(manualId)).toBeNull();
+    expect(await claim(crypto.randomUUID())).toBeNull();
+  });
+  it('no mezcla talleres: la solicitud pública de un taller nunca reclama ni devuelve el id de otro', async () => {
+    await asUser(userB);
+    const slugB = (await db.query<{ slug: string }>('select slug from public.workshops where id=$1', [workshopB])).rows[0].slug;
+    await asAnon();
+    const { clientId: clientA } = await publicIntake(slugA, { phone: '657111002' });
+    const { clientId: clientB } = await publicIntake(slugB, { phone: '657111003' });
+    expect(await claim(clientA)).toBe(workshopA);
+    expect(await claim(clientB)).toBe(workshopB);
+  });
+  it('solo service_role puede ejecutar la función; anon y authenticated no', async () => {
+    await asAnon();
+    const { clientId } = await publicIntake(slugA, { phone: '657111004' });
+    await db.exec('reset role; set role anon;');
+    await expect(db.query('select public.claim_public_request_notification($1)', [clientId])).rejects.toThrow('permission denied');
+    await db.exec('reset role; set role authenticated;');
+    await expect(db.query('select public.claim_public_request_notification($1)', [clientId])).rejects.toThrow('permission denied');
+    await db.exec('reset role; set role service_role;');
+    const result = await db.query<{ claim_public_request_notification: string | null }>('select public.claim_public_request_notification($1)', [clientId]);
+    expect(result.rows[0].claim_public_request_notification).toBe(workshopA);
   });
 });

@@ -48,6 +48,14 @@ export function PublicReceptionPage({ slug, workshop: initialWorkshop }: { slug:
       // request that doesn't exist. The message stays generic so it reads
       // like any other transient failure, not "you were flagged as a bot".
       if (!data) throw new Error('No hemos podido procesar tu consulta. Espera unos segundos y vuelve a intentarlo.');
+      // Best-effort staff notification: never awaited, and any failure is
+      // swallowed here too, so it can never turn a request that already
+      // succeeded into an error or a delay for this visitor. s.id is this
+      // exact request's own id (it's what public_intake just inserted as
+      // requests.id), not the workshop's public slug -- see
+      // notifyNewRequest for why that's the part that keeps this endpoint
+      // from being triggerable without a real request.
+      fetch('/api/notify-new-request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId: s.id }) }).catch(() => {});
       return true;
     }
     return publicDemoIntake(slug, s, consent);
