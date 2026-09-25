@@ -17,3 +17,37 @@
  * sized for a login form, not the two-column chat+review reception-grid. */
 .public-reception .auth-form{max-width:820px}
 
+/* Public reception: give the workshop's brand more presence than the plain
+ * login screens (this is often a visitor's first impression of the
+ * workshop), and keep the address/hours + tagline visible instead of
+ * trimming them away like the internal auth screens do on mobile. */
+.public-reception .brand{font-size:24px}
+.public-reception .brand-mark{width:42px;height:42px;border-radius:12px}
+.public-reception .auth-benefits{display:flex;flex-wrap:wrap;align-items:center;gap:7px 20px;margin-top:22px}
+.public-reception .auth-benefits p{margin:0;font-size:12px}
+
+/* Tighten the chat panel's rhythm so a visitor reaches the send button and
+ * the review step with less scrolling. */
+.public-reception .chat-head{padding:16px 18px}
+.public-reception .bot-icon{padding:9px}
+.public-reception .chat-messages{padding:18px;gap:12px}
+.public-reception .message{padding:10px 13px}
+.public-reception .chat-input{padding:13px 18px}
+.public-reception .chat-progress{padding:0 18px 13px}
+.public-reception .field{margin:13px 0}
+
+@media(max-width:700px){
+.public-reception .auth-story{padding:22px 20px;gap:16px}
+.public-reception .auth-story>small{display:block;margin-top:2px}
+.public-reception .auth-story h1{font-size:27px;margin:9px 0 12px}
+.public-reception .auth-story>div>p{font-size:12px;line-height:1.7}
+.public-reception .auth-benefits{margin-top:14px;gap:6px 16px}
+.public-reception .brand{font-size:22px}
+.public-reception .brand-mark{width:36px;height:36px}
+.public-reception .auth-form{padding:22px 18px 30px}
+.public-reception .chat-card{min-height:0}
+.public-reception .chat-messages{max-height:min(46vh,380px);padding:14px}
+.public-reception .review-card{padding:18px}
+.public-reception .field{margin:10px 0}
+}
+
