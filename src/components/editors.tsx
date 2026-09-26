@@ -1,15 +1,29 @@
 'use client';
 import { useState, type FormEvent } from 'react';
 import { Check, Copy, Link as LinkIcon } from 'lucide-react';
-import type { Appointment, Command, Customer, ServiceRequest, State, Vehicle } from '@/lib/domain';
+import { ANONYMIZED_MARKER, type Appointment, type Command, type Customer, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
 import { Field, Modal } from './ui';
 import { Lookup, type FindOptions } from './lookup';
 type Execute = (c: Command) => Promise<boolean>;
 export function CustomerEditor({ state, initial, execute, onClose }: { state: State; initial?: Customer; execute: Execute; onClose: () => void }) {
   const [value, setValue] = useState<Customer>(initial ?? { id: crypto.randomUUID(), workshop_id: state.workshop.id, name: '', phone: '', notes: '' });
   const [busy, setBusy] = useState(false);
+  const [confirmErase, setConfirmErase] = useState(false);
+  const erased = value.notes.startsWith(ANONYMIZED_MARKER);
   async function save(e: FormEvent) { e.preventDefault(); setBusy(true); if (await execute({ type: 'customer', customer: value })) onClose(); setBusy(false); }
-  return <Modal title={initial ? 'Editar cliente' : 'Nuevo cliente'} onClose={onClose}><form onSubmit={save}><Field label="Nombre"><input required minLength={2} maxLength={100} value={value.name} onChange={e => setValue({ ...value, name: e.target.value })}/></Field><Field label="Teléfono"><input required type="tel" maxLength={20} value={value.phone} onChange={e => setValue({ ...value, phone: e.target.value })}/></Field><Field label="Observaciones"><textarea maxLength={2000} value={value.notes} onChange={e => setValue({ ...value, notes: e.target.value })}/></Field><button className="button primary full" disabled={busy}>Guardar cliente</button></form></Modal>;
+  async function anonymize() { setBusy(true); if (await execute({ type: 'customer_anonymize', id: value.id, version: value.version })) onClose(); setBusy(false); }
+  if (confirmErase) return <Modal title="Anonimizar datos del cliente" onClose={onClose}>
+    <p>Se sustituirán el nombre, el teléfono y las observaciones de este cliente, y se borrará la matrícula de sus vehículos, en aplicación de su derecho de supresión (RGPD/LOPDGDD). Las solicitudes y citas ya registradas se conservan, sin datos personales, para el historial del taller. Esta acción no se puede deshacer.</p>
+    <div className="detail-actions">
+      <button type="button" className="button" onClick={() => setConfirmErase(false)} disabled={busy}>Cancelar</button>
+      <button type="button" className="button primary" onClick={anonymize} disabled={busy}>{busy ? 'Anonimizando…' : 'Sí, anonimizar'}</button>
+    </div>
+  </Modal>;
+  return <Modal title={initial ? 'Editar cliente' : 'Nuevo cliente'} onClose={onClose}><form onSubmit={save}><Field label="Nombre"><input required minLength={2} maxLength={100} value={value.name} onChange={e => setValue({ ...value, name: e.target.value })}/></Field><Field label="Teléfono"><input required type="tel" maxLength={20} value={value.phone} onChange={e => setValue({ ...value, phone: e.target.value })}/></Field><Field label="Observaciones"><textarea maxLength={2000} value={value.notes} onChange={e => setValue({ ...value, notes: e.target.value })}/></Field><button className="button primary full" disabled={busy}>Guardar cliente</button></form>
+  {initial && state.role !== 'staff' && (erased
+    ? <p className="muted">Datos personales ya anonimizados.</p>
+    : <button type="button" className="text-button danger" onClick={() => setConfirmErase(true)}>Anonimizar datos (derecho de supresión)</button>)}
+  </Modal>;
 }
 export function VehicleEditor({ state, initial, execute, onClose, find }: { state: State; initial?: Vehicle; execute: Execute; onClose: () => void; find: FindOptions }) {
   const [value, setValue] = useState<Vehicle>(initial ?? { id: crypto.randomUUID(), workshop_id: state.workshop.id, customer_id: state.customers[0]?.id ?? '', brand: '', model: '', plate: '' });

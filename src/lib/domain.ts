@@ -41,7 +41,15 @@ export type Command =
   | { type: 'resource'; resource: Resource }
   | { type: 'workshop_hours'; hours_version?: number; ranges: WorkshopHourRange[] }
   | { type: 'workshop_hour_exception'; exception: WorkshopHourException }
-  | { type: 'workshop_hour_exception_delete'; id: string; version?: number };
+  | { type: 'workshop_hour_exception_delete'; id: string; version?: number }
+  | { type: 'customer_anonymize'; id: string; version?: number };
+
+// Right-of-erasure marker (RGPD/LOPDGDD): kept as plain text in `notes`
+// instead of a boolean flag so it stays visible and self-explanatory in a
+// customer editor that otherwise just shows free text, and so a future
+// export of a customer's data carries its own explanation. The editor UI
+// checks this exact prefix to know a customer is already anonymized.
+export const ANONYMIZED_MARKER = 'Datos personales eliminados';
 
 // A workshop with no customers and no requests yet has nothing for the
 // dashboard to show; the caller uses this to switch to a first-run guide
@@ -50,7 +58,7 @@ export function isWorkshopEmpty(state: State): boolean {
   return state.customers.length === 0 && state.requests.length === 0;
 }
 
-const ownerOnlyCommands = new Set<Command['type']>(['settings', 'resource', 'workshop_hours', 'workshop_hour_exception', 'workshop_hour_exception_delete']);
+const ownerOnlyCommands = new Set<Command['type']>(['settings', 'resource', 'workshop_hours', 'workshop_hour_exception', 'workshop_hour_exception_delete', 'customer_anonymize']);
 // The calendar date and ISO weekday (1=lunes..7=domingo) an instant falls on
 // in a given IANA timezone. Never used for time-of-day comparisons -- those
 // go through zonedTimeToUtc below instead, so a DST change can't make a
@@ -266,8 +274,19 @@ export function applyCommand(current: State, command: Command, now = new Date())
     checkVersion(old, { version: command.version });
     s.hour_exceptions = (s.hour_exceptions ?? []).filter(item => item.id !== command.id);
   }
+  if (command.type === 'customer_anonymize') {
+    const customer = s.customers.find(c => c.id === command.id);
+    if (!customer) throw new Error('No se ha encontrado el cliente.');
+    checkVersion(customer, command);
+    for (const v of s.vehicles) if (v.customer_id === customer.id && v.plate) { v.plate = ''; v.version = (v.version ?? 1) + 1; }
+    customer.name = 'Cliente anonimizado';
+    customer.phone = '+00000000';
+    customer.phone_e164 = null;
+    customer.notes = `${ANONYMIZED_MARKER} el ${now.toISOString().slice(0, 10)} a petición del cliente (derecho de supresión, RGPD/LOPDGDD).`;
+    customer.version = (customer.version ?? 1) + 1;
+  }
   const entity = command.type === 'customer' ? command.customer.id : command.type === 'vehicle' ? command.vehicle.id : command.type === 'settings' || command.type === 'workshop_hours' ? workshop_id : command.type === 'resource' ? command.resource.id : command.type === 'workshop_hour_exception' ? command.exception.id : command.id;
-  const entityType = command.type === 'intake' || command.type === 'status' ? 'request' : command.type === 'appointment_status' ? 'appointment' : command.type === 'workshop_hours' ? 'workshop' : command.type === 'workshop_hour_exception' || command.type === 'workshop_hour_exception_delete' ? 'workshop_hour_exception' : command.type;
+  const entityType = command.type === 'intake' || command.type === 'status' ? 'request' : command.type === 'appointment_status' ? 'appointment' : command.type === 'workshop_hours' ? 'workshop' : command.type === 'workshop_hour_exception' || command.type === 'workshop_hour_exception_delete' ? 'workshop_hour_exception' : command.type === 'customer_anonymize' ? 'customer' : command.type;
   s.audit = [{ id: crypto.randomUUID(), workshop_id, user_id: s.user_id ?? 'demo-owner', action: command.type, entity_type: entityType, entity_id: entity, created_at: now.toISOString() }, ...(s.audit ?? [])].slice(0, 1000);
   return s;
 }

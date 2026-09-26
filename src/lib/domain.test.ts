@@ -80,6 +80,19 @@ describe('Citas y estados', () => {
     expect(() => applyCommand(s, { type: 'customer', customer: { ...s.customers[0], id: crypto.randomUUID() } }, now)).toThrow('teléfono');
     expect(() => applyCommand(s, { type: 'vehicle', vehicle: { ...s.vehicles[0], workshop_id: crypto.randomUUID() } }, now)).toThrow('Revisa');
   });
+  it('anonimiza un cliente (derecho de supresión) preservando la solicitud y borrando la matrícula de sus vehículos, sin permitirlo a staff', () => {
+    const s = receive();
+    const staffState = { ...s, role: 'staff' as const };
+    expect(() => applyCommand(staffState, { type: 'customer_anonymize', id: s.customers[0].id, version: s.customers[0].version }, now)).toThrow('propietario');
+    expect(() => applyCommand(s, { type: 'customer_anonymize', id: s.customers[0].id, version: 99 }, now)).toThrow('ha cambiado');
+    const next = applyCommand(s, { type: 'customer_anonymize', id: s.customers[0].id, version: s.customers[0].version }, now);
+    expect(next.customers[0].name).toBe('Cliente anonimizado');
+    expect(next.customers[0].phone_e164).toBeNull();
+    expect(next.customers[0].notes).toContain('supresión');
+    expect(next.vehicles[0].plate).toBe('');
+    expect(next.requests).toHaveLength(1); // la solicitud se conserva
+    expect(next.requests[0].customer_id).toBe(s.customers[0].id);
+  });
 });
 describe('Horario estructurado', () => {
   // 2030-01-02 is a Wednesday (day_of_week 3); Europe/Madrid is UTC+1 in January.
