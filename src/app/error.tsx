@@ -1,9 +1,10 @@
 'use client';
 import { useEffect } from 'react';
 import { RotateCcw, Wrench } from 'lucide-react';
+import * as Sentry from '@sentry/nextjs';
 
 export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
-  useEffect(() => { console.error(error); }, [error]);
+  useEffect(() => { console.error(error); Sentry.captureException(error); }, [error]);
   return <main className="onboarding">
     <div className="card">
       <span className="feature-icon"><Wrench/></span>

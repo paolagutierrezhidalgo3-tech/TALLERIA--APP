@@ -17,11 +17,13 @@ describe('páginas 404 y de error con diseño TALLERIA', () => {
     expect(source).toMatch(/className="onboarding"/);
     expect(source).toMatch(/onClick=\{\(\) => reset\(\)\}/);
     expect(source).toMatch(/console\.error\(error\)/);
+    expect(source).toMatch(/Sentry\.captureException\(error\)/);
   });
   it('global-error.tsx cubre un fallo del layout raíz con su propio html/body y reintento', () => {
     const source = readFileSync('src/app/global-error.tsx', 'utf8');
     expect(source).toMatch(/'use client'/);
     expect(source).toMatch(/<html/);
     expect(source).toMatch(/onClick=\{\(\) => reset\(\)\}/);
+    expect(source).toMatch(/Sentry\.captureException\(error\)/);
   });
 });
