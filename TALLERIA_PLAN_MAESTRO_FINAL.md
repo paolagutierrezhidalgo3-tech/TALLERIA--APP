@@ -2,9 +2,9 @@
 
 > Documento de continuidad para Claude Code. Leer al iniciar o retomar el proyecto y actualizar al cerrar cada bloque significativo.
 >
-> Fecha de actualización documental: 25 de septiembre de 2026.
+> Fecha de actualización documental: 26 de septiembre de 2026.
 > Repositorio: `paolagutierrezhidalgo3-tech/TALLERIA--APP`.
-> Prioridad actual: bloque de notificaciones (aviso por correo al owner/staff en solicitudes públicas nuevas) — código validado y revisado por Codex, pendiente de configurar los secretos reales (Resend, Supabase secret key), probarlo de extremo a extremo, y solo entonces commitear/empujar.
+> Prioridad actual: ninguna decidida por el usuario más allá de lo ya cerrado (fases A–F, CI base y el gate de CI→Vercel en el lado de código). Queda pendiente, a decidir por el usuario: (a) crear los secretos de GitHub `VERCEL_TOKEN`/`VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` y ajustar el "Ignored Build Step" en Vercel para que el despliegue real quede gobernado por el CI; (b) configurar `LEGAL_TAX_ID`/`LEGAL_CONTACT_EMAIL` en Vercel antes de compartir el enlace de recepción pública con clientes reales; (c) recomendaciones no bloqueantes restantes (dominio propio de Resend, monitorización de errores en producción, confirmar plan/tier de Supabase y Vercel). No se ha empezado ningún bloque nuevo.
 
 ## 1. Propósito y fuentes
 
