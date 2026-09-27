@@ -52,6 +52,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # vercel build shells out to this project's package manager (pnpm, per
+      # packageManager in package.json) to install deps and run the build
+      # script -- without these two, the runner has no pnpm at all and
+      # `vercel build` fails with "spawn pnpm ENOENT". Same setup as the
+      # checks job above, so both jobs use the exact same pnpm/Node version.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
       # GitHub Actions won't let a job/step `if:` reference `secrets`
       # directly, so this step surfaces "is VERCEL_TOKEN set" as a step
       # output instead; every step below reads that output rather than the
