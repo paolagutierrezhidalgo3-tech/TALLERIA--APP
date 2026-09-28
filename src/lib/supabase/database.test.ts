@@ -490,6 +490,51 @@ describe('Horario estructurado: is_within_business_hours y execute_command', () 
   });
 });
 
+describe('Vista de calendario: workspace_snapshot(calendar, rango)', () => {
+  const owner = '10000000-0000-4000-8000-000000000022', staff = '10000000-0000-4000-8000-000000000023';
+  let workshop: string, resource: string;
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id) values($1),($2)', [owner, staff]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller calendario') id")).rows[0].id;
+    resource = (await db.query<{ id: string }>('select id from public.resources where workshop_id=$1', [workshop])).rows[0].id;
+    await db.exec('reset role');
+    await db.query("insert into public.workshop_members(workshop_id,user_id,role) values($1,$2,'staff')", [workshop, staff]);
+  });
+  async function snapshotCalendar(rangeStart: string | null, rangeEnd: string | null) {
+    return (await db.query<{ s: { appointments: { id: string }[]; page_info: { view: string; total: number } } }>(
+      "select public.workspace_snapshot($1,'calendar',0,'','all',$2,$3) s", [workshop, rangeStart, rangeEnd],
+    )).rows[0].s;
+  }
+  it('devuelve las citas que solapan el rango, incluidas las que ya habían empezado, y excluye las que empiezan justo al terminar', async () => {
+    await asUser(owner);
+    await execute(workshop, intake('622222001', '2000AAA'));
+    await execute(workshop, intake('622222002', '2000AAB'));
+    await execute(workshop, intake('622222003', '2000AAC'));
+    const requests = (await db.query<{ id: string; version: number }>("select id,version from public.requests where status='nueva' order by created_at")).rows;
+    const overlapsStart = crypto.randomUUID(), fullyInside = crypto.randomUUID(), startsAtRangeEnd = crypto.randomUUID();
+    await execute(workshop, { type: 'appointment', id: overlapsStart, request_id: requests[0].id, request_version: requests[0].version, resource_id: resource, starts_at: '2031-02-02T08:30:00Z', duration_minutes: 60, notes: '' });
+    await execute(workshop, { type: 'appointment', id: fullyInside, request_id: requests[1].id, request_version: requests[1].version, resource_id: resource, starts_at: '2031-02-02T09:30:00Z', duration_minutes: 15, notes: '' });
+    await execute(workshop, { type: 'appointment', id: startsAtRangeEnd, request_id: requests[2].id, request_version: requests[2].version, resource_id: resource, starts_at: '2031-02-02T10:00:00Z', duration_minutes: 15, notes: '' });
+    const snapshot = await snapshotCalendar('2031-02-02T09:00:00Z', '2031-02-02T10:00:00Z');
+    expect(snapshot.page_info).toMatchObject({ view: 'calendar', total: 2 });
+    expect(snapshot.appointments.map(a => a.id).sort()).toEqual([overlapsStart, fullyInside].sort());
+  });
+  it('exige un rango bien formado y acotado a 32 días', async () => {
+    await asUser(owner);
+    await expect(snapshotCalendar(null, null)).rejects.toThrow('no es válida');
+    await expect(snapshotCalendar('2031-02-02T10:00:00Z', '2031-02-02T09:00:00Z')).rejects.toThrow('no es válida');
+    await expect(snapshotCalendar('2031-01-01T00:00:00Z', '2031-03-01T00:00:00Z')).rejects.toThrow('no es válida');
+    await expect(snapshotCalendar('2031-01-01T00:00:00Z', '2031-01-15T00:00:00Z')).resolves.toBeTruthy();
+  });
+  it('un miembro staff también puede leer el calendario, y un taller ajeno no', async () => {
+    await asUser(staff);
+    await expect(snapshotCalendar('2031-02-02T00:00:00Z', '2031-02-03T00:00:00Z')).resolves.toBeTruthy();
+    await asUser(userA);
+    await expect(snapshotCalendar('2031-02-02T00:00:00Z', '2031-02-03T00:00:00Z')).rejects.toThrow('acceso');
+  });
+});
 describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada más', () => {
   let slugA: string;
   beforeAll(async () => {

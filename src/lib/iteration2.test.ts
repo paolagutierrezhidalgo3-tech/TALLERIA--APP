@@ -22,4 +22,22 @@ describe('Reglas de la segunda iteración en demo',()=>{
  it('limita operaciones e idempotencia no consume otra operación',()=>{const s=receive(base());s.audit=Array.from({length:100},()=>({...s.audit![0],created_at:now.toISOString()}));expect(()=>applyCommand(s,{type:'status',id:s.requests[0].id,status:'pendiente'},now)).toThrow('demasiadas');expect(applyCommand(s,{type:'intake',id:s.requests[0].id,data:{} as never,messages:[]},now).requests).toHaveLength(1);});
  it('migra duplicados heredados preservando referencias y teléfonos dudosos',()=>{const s=receive(base());delete s.schema_version;const c=s.customers[0];s.customers.push({...c,id:crypto.randomUUID(),phone:'+34 600123456'});s.customers.push({...c,id:crypto.randomUUID(),phone:'123'});s.vehicles[0].customer_id=s.customers[1].id;s.requests[0].customer_id=s.customers[1].id;const next=upgradeDemo(s);expect(next.customers).toHaveLength(2);expect(next.requests[0].customer_id).toBe(next.vehicles[0].customer_id);expect(next.customers.some(c=>c.phone_e164===null)).toBe(true);expect(next.audit?.some(a=>a.action==='customer_merged')).toBe(true);});
  it('pagina raíces, conserva métricas globales y busca fuera de la primera página',()=>{const s=base();s.customers=Array.from({length:61},(_,i)=>({id:crypto.randomUUID(),workshop_id:s.workshop.id,name:'Cliente '+String(i).padStart(3,'0'),phone:'+34600123456',notes:''}));const q={view:'customers' as const,offset:0,search:'',status:'all'};const first=projectState(s,q),next=projectState(s,{...q,offset:25});expect(first.customers).toHaveLength(25);expect(first.page_info?.total).toBe(61);expect(next.customers.some(c=>first.customers.some(f=>f.id===c.id))).toBe(false);expect(projectState(s,{...q,search:'060'}).customers).toHaveLength(1);});
+ it('calendario: selecciona citas que solapan el rango (no solo las que empiezan dentro) y nunca pagina',()=>{
+  let s=receive(receive(base()));
+  const resource=s.resources![0].id;
+  const cmd=(id:string,requestIndex:number,starts_at:string,duration_minutes:number)=>({type:'appointment' as const,id,request_id:s.requests[requestIndex].id,request_version:s.requests[requestIndex].version,resource_id:resource,starts_at,duration_minutes,notes:''});
+  const overlapsStart=crypto.randomUUID(), fullyInside=crypto.randomUUID();
+  s=applyCommand(s,cmd(overlapsStart,0,'2030-01-02T08:30:00Z',60),now); // termina 09:30Z: solapa el inicio del rango
+  s=applyCommand(s,cmd(fullyInside,1,'2030-01-02T09:30:00Z',15),now); // consecutiva, íntegramente dentro
+  const q={view:'calendar' as const,offset:0,search:'',status:'all',range_start:'2030-01-02T09:00:00Z',range_end:'2030-01-02T10:00:00Z'};
+  const result=projectState(s,q);
+  expect(result.appointments.map(a=>a.id).sort()).toEqual([overlapsStart,fullyInside].sort());
+  expect(result.page_info).toMatchObject({view:'calendar',total:2});
+  expect(result.requests.map(r=>r.id).sort()).toEqual([s.requests[0].id,s.requests[1].id].sort()); // arrastra las solicitudes de cada cita, como el resto de vistas
+ });
+ it('calendario: sin un rango bien formado, no devuelve ninguna cita en vez de lanzar o devolverlas todas',()=>{
+  const s=receive(base());
+  expect(projectState(s,{view:'calendar',offset:0,search:'',status:'all'}).appointments).toHaveLength(0);
+  expect(projectState(s,{view:'calendar',offset:0,search:'',status:'all',range_start:'no-es-una-fecha',range_end:'2030-01-02T10:00:00Z'}).appointments).toHaveLength(0);
+ });
 });

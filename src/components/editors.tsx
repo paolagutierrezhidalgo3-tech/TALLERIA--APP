@@ -32,12 +32,15 @@ export function VehicleEditor({ state, initial, execute, onClose, find }: { stat
   return <Modal title={initial ? 'Editar vehículo' : 'Nuevo vehículo'} onClose={onClose}><form onSubmit={save}><Lookup kind="customer" label="Cliente" disabled={!!initial} selected={value.customer_id} onChange={id=>setValue({...value,customer_id:id})} find={find} initial={state.customers.map(c=>({id:c.id,label:c.name}))}/><div className="form-grid"><Field label="Marca"><input required maxLength={60} value={value.brand} onChange={e => setValue({ ...value, brand: e.target.value })}/></Field><Field label="Modelo"><input required maxLength={80} value={value.model} onChange={e => setValue({ ...value, model: e.target.value })}/></Field></div><Field label="Matrícula (opcional)"><input maxLength={20} value={value.plate} onChange={e => setValue({ ...value, plate: e.target.value })}/></Field><button className="button primary full" disabled={busy || !value.customer_id}>Guardar vehículo</button></form></Modal>;
 }
 function localInput(iso: string) { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
-export function AppointmentEditor({ state, request, initial, execute, onClose, find }: { state: State; request?: ServiceRequest; initial?: Appointment; execute: Execute; onClose: () => void; find: FindOptions }) {
+export function AppointmentEditor({ state, request, initial, execute, onClose, find, initialResourceId, initialStartsAt }: { state: State; request?: ServiceRequest; initial?: Appointment; execute: Execute; onClose: () => void; find: FindOptions; initialResourceId?: string; initialStartsAt?: string }) {
   const choices = state.requests.filter(r => !['cancelada', 'completada'].includes(r.status) && !state.appointments.some(a => a.request_id === r.id && a.status === 'scheduled' && a.id !== initial?.id));
   const [requestId, setRequestId] = useState(initial?.request_id ?? request?.id ?? choices[0]?.id ?? '');
   const [requestVersion, setRequestVersion] = useState(state.requests.find(r=>r.id===(initial?.request_id ?? request?.id ?? choices[0]?.id))?.version);
-  const [resourceId, setResourceId] = useState(initial?.resource_id ?? state.resources?.find(r=>r.active)?.id ?? '');
-  const [starts, setStarts] = useState(initial ? localInput(initial.starts_at) : '');
+  // initialResourceId/initialStartsAt only seed a brand-new appointment (a
+  // click on an empty calendar slot); reprogramming an existing one, or
+  // creating one from a solicitud's own "Crear cita" button, is unaffected.
+  const [resourceId, setResourceId] = useState(initial?.resource_id ?? initialResourceId ?? state.resources?.find(r=>r.active)?.id ?? '');
+  const [starts, setStarts] = useState(initial ? localInput(initial.starts_at) : initialStartsAt ? localInput(initialStartsAt) : '');
   const [minutes, setMinutes] = useState(initial?.duration_minutes ?? state.workshop.appointment_minutes);
   const [notes, setNotes] = useState(initial?.notes ?? '');
   const [error, setError] = useState('');

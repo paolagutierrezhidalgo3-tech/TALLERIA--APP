@@ -63,11 +63,21 @@ const ownerOnlyCommands = new Set<Command['type']>(['settings', 'resource', 'wor
 // in a given IANA timezone. Never used for time-of-day comparisons -- those
 // go through zonedTimeToUtc below instead, so a DST change can't make a
 // later instant format as an earlier-looking wall-clock string.
-function localDateParts(date: Date, timeZone: string): { date: string; day_of_week: number } {
+export function localDateParts(date: Date, timeZone: string): { date: string; day_of_week: number } {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
   const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
   const isoDay: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
   return { date: `${parts.year}-${parts.month}-${parts.day}`, day_of_week: isoDay[parts.weekday] };
+}
+// Minutes since local midnight, in the given timezone, for an instant. Unlike
+// zonedTimeToUtc this never needs DST disambiguation: it only reads the wall
+// clock a real instant already falls on, it never resolves an ambiguous or
+// nonexistent one.
+export function localMinutesOfDay(date: Date, timeZone: string): number {
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, hour12: false, hour: '2-digit', minute: '2-digit' });
+  const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+  const hour = parts.hour === '24' ? 0 : Number(parts.hour);
+  return hour * 60 + Number(parts.minute);
 }
 function offsetMsAt(instant: number, timeZone: string): number {
   const fmt = new Intl.DateTimeFormat('en-US', { timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -92,7 +102,7 @@ function offsetMsAt(instant: number, timeZone: string): number {
 // against PostgreSQL for Europe/Madrid, America/New_York, Australia/Sydney,
 // Australia/Lord_Howe (30-minute DST) and Africa/Casablanca (its Ramadan
 // offset, adjacent to no fixed calendar month).
-function zonedTimeToUtc(isoDate: string, time: string, timeZone: string): number {
+export function zonedTimeToUtc(isoDate: string, time: string, timeZone: string): number {
   const [y, m, d] = isoDate.split('-').map(Number);
   const [hh, mm] = time.split(':').map(Number);
   const guess = Date.UTC(y, m - 1, d, hh, mm);
@@ -110,12 +120,32 @@ function zonedTimeToUtc(isoDate: string, time: string, timeZone: string): number
   const lowerIsValid = offsetMsAt(lowerCandidate, timeZone) === lower;
   return upperIsValid && !lowerIsValid ? upperCandidate : lowerCandidate;
 }
+// The open ranges that apply to one calendar date: an exception (if any)
+// replaces the weekly schedule entirely for that date (closed => no ranges
+// at all); otherwise the weekly ranges for that date's weekday apply. `null`
+// means the workshop never configured structured hours at all, so the date
+// is unrestricted -- distinct from `[]`, which means configured-but-closed.
+// Shared by isWithinBusinessHours (enforcement) and the calendar view
+// (rendering which hours to show as open) so both read the same rule.
+export function businessHoursForDate(s: State, isoDate: string): WorkshopHourRange[] | null {
+  const hours = s.hours ?? [];
+  if (hours.length === 0) return null;
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const weekday = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  const dayOfWeek = weekday === 0 ? 7 : weekday;
+  const exception = (s.hour_exceptions ?? []).find(e => e.exception_date === isoDate);
+  if (exception) return exception.closed || !exception.opens_at || !exception.closes_at ? [] : [{ day_of_week: dayOfWeek, opens_at: exception.opens_at, closes_at: exception.closes_at }];
+  return hours.filter(h => h.day_of_week === dayOfWeek);
+}
 // A workshop that never configured structured hours has none of these
 // ranges, so it stays unrestricted, exactly like the free-text hours field
 // always was.
 function isWithinBusinessHours(s: State, start: Date, durationMinutes: number): boolean {
-  const hours = s.hours ?? [];
-  if (hours.length === 0) return true;
+  // A workshop that never configured structured hours stays unrestricted,
+  // exactly like the free-text hours field always was -- checked first, and
+  // separately from businessHoursForDate's own null/[] distinction, because
+  // the midnight-crossing rule below must not apply here either.
+  if ((s.hours ?? []).length === 0) return true;
   const tz = s.workshop.timezone;
   const startMs = start.getTime();
   const endMs = startMs + durationMinutes * 60000;
@@ -123,12 +153,8 @@ function isWithinBusinessHours(s: State, start: Date, durationMinutes: number): 
   // Ranges never span midnight, so an appointment crossing into the next
   // local day can never be fully inside one and is rejected outright.
   if (from.date !== localDateParts(new Date(endMs), tz).date) return false;
-  const exception = (s.hour_exceptions ?? []).find(e => e.exception_date === from.date);
-  if (exception) {
-    if (exception.closed || !exception.opens_at || !exception.closes_at) return false;
-    return startMs >= zonedTimeToUtc(from.date, exception.opens_at, tz) && endMs <= zonedTimeToUtc(from.date, exception.closes_at, tz);
-  }
-  return hours.some(h => h.day_of_week === from.day_of_week && startMs >= zonedTimeToUtc(from.date, h.opens_at, tz) && endMs <= zonedTimeToUtc(from.date, h.closes_at, tz));
+  const ranges = businessHoursForDate(s, from.date)!; // hours.length > 0 here, so this is never null
+  return ranges.some(h => startMs >= zonedTimeToUtc(from.date, h.opens_at, tz) && endMs <= zonedTimeToUtc(from.date, h.closes_at, tz));
 }
 export function applyCommand(current: State, command: Command, now = new Date()): State {
   const s = structuredClone(current);

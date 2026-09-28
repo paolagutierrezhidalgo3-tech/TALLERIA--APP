@@ -2,14 +2,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDownLeft, ArrowRight, CalendarDays, Car, Check, ChevronRight, Inbox, LayoutDashboard, LogOut, Menu, MessageSquare, Plus, Search, Settings2, Sparkles, UserPlus, Users, Wrench, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { isWorkshopEmpty, statusLabels, statuses, type Appointment, type Command, type Customer, type RequestStatus, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
+import { isWorkshopEmpty, localDateParts, statusLabels, statuses, type Appointment, type Command, type Customer, type RequestStatus, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
 import { DemoRepository, type WorkshopRepository } from '@/lib/repository';
 import { getSupabase, isSupabaseMode } from '@/lib/supabase/client';
 import { SupabaseRepository } from '@/lib/supabase/repository';
 import { acceptInvitation, declineInvitation, myPendingInvitation, type PendingInvitation } from '@/lib/supabase/team';
 import { resolveSession } from '@/lib/supabase/session';
 import { AuthScreen } from './auth-screen';
-import { Badge, dateLabel, Empty, Field, initials, Modal } from './ui';
+import { AppointmentCard, Badge, dateLabel, Empty, Field, initials, Modal } from './ui';
 import { AppointmentEditor, CustomerEditor, Settings, VehicleEditor } from './editors';
 import { Resources } from './resources';
 import { Hours } from './hours';
@@ -18,6 +18,8 @@ import { GettingStarted } from './getting-started';
 import { defaultQuery, PAGE_SIZE } from '@/lib/queries';
 import type { FindOptions } from './lookup';
 import { Reception } from './reception';
+import { Calendar } from './calendar';
+import { calendarQueryFor } from '@/lib/calendar-layout';
 
 const pages = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Todo lo importante, de un vistazo.' },
@@ -31,7 +33,7 @@ const pages = [
   { id: 'settings', label: 'Configuración', icon: Settings2, description: 'Haz que TALLERIA se adapte a tu taller.' },
 ] as const;
 type Page = typeof pages[number]['id'];
-type Editor = { type: 'customer'; initial?: Customer } | { type: 'vehicle'; initial?: Vehicle } | { type: 'appointment'; initial?: Appointment; request?: ServiceRequest } | null;
+type Editor = { type: 'customer'; initial?: Customer } | { type: 'vehicle'; initial?: Vehicle } | { type: 'appointment'; initial?: Appointment; request?: ServiceRequest; initialResourceId?: string; initialStartsAt?: string } | null;
 export function Workspace() {
   const repository = useRef<WorkshopRepository | null>(null);
   const [offset, setOffset] = useState(0);
@@ -39,6 +41,13 @@ export function Workspace() {
   const [cancelId, setCancelId] = useState<{ id: string; version?: number; request_version?: number } | null>(null);
   const queryKey = useRef('');
   const loadSequence = useRef(0);
+  // Which calendar range is actually loaded into `state` right now (null
+  // until the first successful calendar load). Compared at render time
+  // against the range the current anchor/mode/timezone want, so navigating
+  // to a new date never shows the previous date's citas while the new range
+  // is still loading -- or forever, if that load then fails. State, not a
+  // ref: it's read during render, so it must be able to trigger one.
+  const [loadedCalendarKey, setLoadedCalendarKey] = useState<string | null>(null);
   const find: FindOptions = useCallback((kind, text) => repository.current?.lookup(kind, text) ?? Promise.resolve([]), []);
   const mutation = useRef(false);
   const recovering = useRef(false);
@@ -49,6 +58,9 @@ export function Workspace() {
   const [page, setPage] = useState<Page>('dashboard');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<RequestStatus | 'all'>('all');
+  const [agendaView, setAgendaView] = useState<'calendar' | 'list'>('calendar');
+  const [calendarMode, setCalendarMode] = useState<'day' | 'week'>('week');
+  const [calendarAnchor, setCalendarAnchor] = useState<string | null>(null);
   const [mobile, setMobile] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -150,11 +162,15 @@ export function Workspace() {
     window.addEventListener('storage', sync);
     return () => window.removeEventListener('storage', sync);
   }, [load, screen]);
+  const timezone = state?.workshop.timezone;
   useEffect(() => {
     // 'team' is a local page backed by its own RPCs (see team.tsx), not by
     // workspace_snapshot's paginated view set, so it never fetches here.
     if (screen !== 'app' || !repository.current || page === 'team') return;
-    const query = { view: page, offset, search, status: filter };
+    const isCalendar = page === 'appointments' && agendaView === 'calendar' && !!timezone;
+    const query = isCalendar
+      ? calendarQueryFor(calendarAnchor ?? localDateParts(new Date(), timezone!).date, calendarMode, timezone!)
+      : { view: page, offset, search, status: filter };
     const key = JSON.stringify(query);
     if (queryKey.current === key) return;
     const sequence = ++loadSequence.current;
@@ -162,12 +178,15 @@ export function Workspace() {
     const timer = setTimeout(() => {
       setDataLoading(true);
       void repository.current!.load(query).then(next => {
-        if (active && sequence === loadSequence.current) { setState(next); queryKey.current = key; }
+        if (active && sequence === loadSequence.current) {
+          setState(next); queryKey.current = key;
+          if (isCalendar) setLoadedCalendarKey(key);
+        }
       }).catch(err => setError(err instanceof Error ? err.message : 'No se pueden cargar los datos.'))
         .finally(() => { if (active && sequence === loadSequence.current) setDataLoading(false); });
     }, search ? 200 : 0);
     return () => { active = false; clearTimeout(timer); };
-  }, [screen, page, offset, search, filter]);
+  }, [screen, page, offset, search, filter, agendaView, calendarMode, calendarAnchor, timezone]);
   async function execute(command: Command) {
     if (!repository.current || mutation.current) return false;
     mutation.current = true; setBusy(true); setError('');
@@ -245,12 +264,16 @@ export function Workspace() {
   const activeRequest = state.requests.find(r => r.id === selected);
   const activeConversation = state.conversations.find(c => c.id === conversation);
   const day = new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: state.workshop.timezone }).format(new Date());
+  const todayISO = localDateParts(new Date(), state.workshop.timezone).date;
   function requestTable(items: ServiceRequest[]) {
     return items.length ? <div className="table-wrap"><table><thead><tr><th>Cliente / vehículo</th><th>Motivo de la consulta</th><th>Estado</th><th>Recibida</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{items.map(r => { const c = customer(r.customer_id), v = vehicle(r.vehicle_id); const publicSource = state!.conversations.find(conv => conv.id === r.conversation_id)?.channel === 'public'; return <tr key={r.id}><td><div className="person-cell"><span className="avatar">{initials(c?.name ?? '?')}</span><div><b>{c?.name}</b><small>{v?.brand} {v?.model} · {v?.plate || 'Sin matrícula'}</small></div></div></td><td><span className="reason-cell">{r.reason}</span><small className="source"><MessageSquare size={12}/> {publicSource ? 'Recepción digital' : 'Registro manual'}</small></td><td><Badge status={r.status}/></td><td className="muted nowrap">{dateLabel(r.created_at, state!.workshop.timezone)}</td><td><button className="icon-button" aria-label={'Ver solicitud de ' + c?.name} onClick={() => setSelected(r.id)}><ChevronRight size={18}/></button></td></tr>; })}</tbody></table></div> : <Empty title="No hay solicitudes aquí">Prueba otra búsqueda o registra una manualmente.</Empty>;
   }
   function appointmentCard(a: Appointment) {
     const r = state!.requests.find(r => r.id === a.request_id);
-    return <article className="appointment-item" key={a.id}><div className="appointment-time">{new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: state!.workshop.timezone }).format(new Date(a.starts_at))}<small>{a.duration_minutes} min</small></div><div><b>{r && customer(r.customer_id)?.name}</b><p>{r?.reason}</p><small>{dateLabel(a.starts_at, state!.workshop.timezone)} · {state!.resources?.find(r => r.id === a.resource_id)?.name}</small></div><span className={'appointment-state ' + a.status}>{a.status === 'scheduled' ? 'Programada' : a.status === 'completed' ? 'Completada' : 'Cancelada'}</span>{page === 'appointments' && a.status === 'scheduled' && <div className="appointment-actions"><button className="button small" onClick={() => setEditor({ type: 'appointment', initial: a })}>Reprogramar</button><button className="button small" disabled={busy} onClick={() => void execute({ type: 'appointment_status', id: a.id, version: a.version, request_version: r?.version, status: 'completed' })}><Check size={14}/>Completar</button><button className="text-button danger" disabled={busy} onClick={() => setCancelId({ id: a.id, version: a.version, request_version: r?.version })}>Cancelar cita</button></div>}</article>;
+    return <AppointmentCard key={a.id} appointment={a} customerName={r && customer(r.customer_id)?.name} reason={r?.reason} resourceName={state!.resources?.find(res => res.id === a.resource_id)?.name} timezone={state!.workshop.timezone} actionable={page === 'appointments'} busy={busy}
+      onReprogram={() => setEditor({ type: 'appointment', initial: a })}
+      onComplete={() => void execute({ type: 'appointment_status', id: a.id, version: a.version, request_version: r?.version, status: 'completed' })}
+      onCancel={() => setCancelId({ id: a.id, version: a.version, request_version: r?.version })}/>;
   }
   return <div className="app-shell">{mobile && <button className="sidebar-backdrop" aria-label="Cerrar menú" onClick={() => setMobile(false)}/>}<aside ref={sidebarRef} className={'sidebar ' + (mobile ? 'is-open' : '')} role={mobile ? 'dialog' : undefined} aria-modal={mobile ? true : undefined} aria-label={mobile ? 'Menú' : undefined} onKeyDown={e => {
     if (!mobile) return;
@@ -266,7 +289,12 @@ export function Workspace() {
   {page === 'customers' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={value => { setOffset(0); setSearch(value); }} placeholder="Buscar nombre o teléfono…"/><button className="button primary" onClick={() => setEditor({ type: 'customer' })}><Plus size={16}/>Nuevo cliente</button></div><div className="entity-grid">{state.customers.filter(c => onPage(c.id)).map(c => <article className="entity-card" key={c.id}><span className="avatar large">{initials(c.name)}</span><h3>{c.name}</h3><a href={'tel:' + c.phone.replace(/\s/g, '')}>{c.phone}</a><p>{state.customer_counts?.[c.id]?.vehicles ?? 0} vehículos · {state.customer_counts?.[c.id]?.requests ?? 0} solicitudes</p>{c.phone_e164 === null && <p className="phone-review">Revisa el teléfono para evitar duplicados.</p>}{c.notes && <p>{c.notes}</p>}<button className="button small" onClick={() => setEditor({ type: 'customer', initial: c })}>Editar cliente</button></article>)}</div>{!state.customers.filter(c => onPage(c.id)).length && <Empty title="No se encontraron clientes"/>}</section>}
   {page === 'vehicles' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={value => { setOffset(0); setSearch(value); }} placeholder="Buscar marca, matrícula o cliente…"/><button className="button primary" onClick={() => setEditor({ type: 'vehicle' })}><Plus size={16}/>Nuevo vehículo</button></div><div className="entity-grid">{state.vehicles.filter(v => onPage(v.id)).map(v => <article className="entity-card" key={v.id}><span className="vehicle-icon"><Car size={28}/></span><h3>{v.brand} {v.model}</h3><span className="plate">{v.plate || 'Sin matrícula'}</span><p>{customer(v.customer_id)?.name}</p><button className="button small" onClick={() => setEditor({ type: 'vehicle', initial: v })}>Editar vehículo</button></article>)}</div>{!state.vehicles.filter(v => onPage(v.id)).length && <Empty title="No se encontraron vehículos"/>}</section>}
   {page === 'conversations' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={value => { setOffset(0); setSearch(value); }} placeholder="Buscar en las conversaciones…"/><span className="muted">{state.conversations.length} conversaciones</span></div>{state.conversations.filter(c => onPage(c.id)).map(c => { const r = state.requests.find(r => r.conversation_id === c.id); return <button key={c.id} className="conversation-row" onClick={() => setConversation(c.id)}><span className="avatar"><MessageSquare size={19}/></span><div><b>{r ? customer(r.customer_id)?.name : 'Recepción'}</b><p>{r?.reason ?? 'Conversación simulada'}</p><small>{dateLabel(c.created_at, state.workshop.timezone)} · Simulador</small></div><ChevronRight size={19}/></button>; })}{!state.conversations.filter(c => onPage(c.id)).length && <Empty title="No hay conversaciones"/>}</section>}
-  {page === 'appointments' && <section className="card"><div className="list-toolbar"><div><h2>Agenda del taller</h2><p className="muted">Zona horaria: {state.workshop.timezone}</p></div><button className="button primary" onClick={() => setEditor({ type: 'appointment' })}><Plus size={16}/>Nueva cita</button></div>{state.appointments.length ? (state.page_info?.ids ?? []).flatMap(id => state.appointments.filter(a => a.id === id)).map(appointmentCard) : <Empty title="Tu agenda está lista">Crea una solicitud y asígnale su primera cita.</Empty>}</section>}
+  {page === 'appointments' && <>
+    <div className="list-toolbar"><div><h2>Agenda del taller</h2><p className="muted">Zona horaria: {state.workshop.timezone}</p></div><div className="agenda-toolbar-actions"><div className="calendar-mode-toggle" role="group" aria-label="Calendario o lista"><button type="button" className={agendaView === 'calendar' ? 'active' : ''} aria-pressed={agendaView === 'calendar'} onClick={() => setAgendaView('calendar')}>Calendario</button><button type="button" className={agendaView === 'list' ? 'active' : ''} aria-pressed={agendaView === 'list'} onClick={() => setAgendaView('list')}>Lista</button></div><button className="button primary" onClick={() => setEditor({ type: 'appointment' })}><Plus size={16}/>Nueva cita</button></div></div>
+    {agendaView === 'calendar'
+      ? <Calendar state={state} appointments={loadedCalendarKey === JSON.stringify(calendarQueryFor(calendarAnchor ?? todayISO, calendarMode, state.workshop.timezone)) && state.page_info?.view === 'calendar' ? state.page_info.ids.flatMap(id => state.appointments.filter(a => a.id === id)) : []} busy={busy} execute={execute} mode={calendarMode} onModeChange={setCalendarMode} anchor={calendarAnchor ?? todayISO} onAnchorChange={setCalendarAnchor} onCreate={(resourceId, startsAt) => setEditor({ type: 'appointment', initialResourceId: resourceId, initialStartsAt: startsAt })} onReprogram={a => setEditor({ type: 'appointment', initial: a })} onCancel={a => setCancelId({ id: a.id, version: a.version, request_version: state!.requests.find(r => r.id === a.request_id)?.version })}/>
+      : <section className="card">{state.appointments.length ? (state.page_info?.ids ?? []).flatMap(id => state.appointments.filter(a => a.id === id)).map(appointmentCard) : <Empty title="Tu agenda está lista">Crea una solicitud y asígnale su primera cita.</Empty>}</section>}
+  </>}
   {page === 'reception' && <Reception execute={execute} onCreated={() => { navigate('requests'); setFilter('nueva'); setNotice('Solicitud creada con su cliente, vehículo y conversación'); }}/>}
   {page === 'team' && owner && isSupabaseMode && <Team state={state}/>}
   {page === 'settings' && owner && <><Settings key={state.workshop.version} state={state} execute={execute}/><Hours state={state} execute={execute}/><Resources state={state} execute={execute}/></>}
@@ -278,7 +306,7 @@ export function Workspace() {
   {activeConversation && <Modal title="Conversación de recepción" onClose={() => setConversation(null)}><p className="muted">Simulación · {dateLabel(activeConversation.created_at, state.workshop.timezone)}</p><div className="conversation-history">{activeConversation.messages.map((m, i) => <div className={'message ' + m.role} key={i}><small>{m.role === 'assistant' ? 'TALLERIA' : 'Cliente'}</small><p>{m.content}</p></div>)}</div><button className="button full" onClick={() => { setSelected(state.requests.find(r => r.conversation_id === activeConversation.id)?.id ?? null); setConversation(null); }}>Ver solicitud vinculada<ArrowRight size={16}/></button></Modal>}
   {editor?.type === 'customer' && <CustomerEditor state={state} initial={editor.initial} execute={execute} onClose={() => setEditor(null)}/>}
   {editor?.type === 'vehicle' && <VehicleEditor find={find} state={state} initial={editor.initial} execute={execute} onClose={() => setEditor(null)}/>}
-  {editor?.type === 'appointment' && <AppointmentEditor find={find} state={state} initial={editor.initial} request={editor.request} execute={execute} onClose={() => setEditor(null)}/>}
+  {editor?.type === 'appointment' && <AppointmentEditor find={find} state={state} initial={editor.initial} request={editor.request} initialResourceId={editor.initialResourceId} initialStartsAt={editor.initialStartsAt} execute={execute} onClose={() => setEditor(null)}/>}
   {cancelId && <Modal title="Cancelar cita" onClose={() => setCancelId(null)}><p>La cita quedará cancelada y la solicitud volverá a estar pendiente. ¿Quieres continuar?</p><div className="detail-actions"><button className="button" onClick={() => setCancelId(null)}>Conservar cita</button><button className="button primary" disabled={busy} onClick={async () => { if (await execute({ type: 'appointment_status', ...cancelId, status: 'cancelled' })) setCancelId(null); }}>Confirmar cancelación</button></div></Modal>}
   {resetOpen && <Modal title="Restablecer datos demo" onClose={() => setResetOpen(false)}><p>Se borrarán los cambios de la demo en este navegador y se recuperarán los clientes y solicitudes de ejemplo.</p><div className="detail-actions"><button className="button" onClick={() => setResetOpen(false)}>Conservar cambios</button><button className="button primary" onClick={() => void resetDemo()}>Restablecer demo</button></div></Modal>}</div>;
 }

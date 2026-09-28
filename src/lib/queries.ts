@@ -1,7 +1,11 @@
 import { searchText } from './search';
 import type { State } from './domain';
-export type View = 'dashboard' | 'requests' | 'customers' | 'vehicles' | 'conversations' | 'appointments' | 'reception' | 'settings';
-export interface ViewQuery { view: View; offset: number; search: string; status: string }
+export type View = 'dashboard' | 'requests' | 'customers' | 'vehicles' | 'conversations' | 'appointments' | 'calendar' | 'reception' | 'settings';
+// range_start/range_end (ISO instants) are only used by view:'calendar', to
+// select appointments overlapping [range_start, range_end) instead of
+// paginating by offset -- a calendar grid needs every appointment in the
+// visible range, not one fixed-size page of it.
+export interface ViewQuery { view: View; offset: number; search: string; status: string; range_start?: string; range_end?: string }
 export interface LookupOption { id: string; label: string; version?: number }
 export const PAGE_SIZE = 25;
 export const defaultQuery: ViewQuery = { view: 'dashboard', offset: 0, search: '', status: 'all' };
@@ -18,10 +22,20 @@ export function projectState(s: State, query: ViewQuery = defaultQuery): State {
   if (query.view==='vehicles') ids = [...s.vehicles].sort((a,b)=>a.brand.localeCompare(b.brand)||a.id.localeCompare(b.id)).filter(v=>match(v.brand+' '+v.model+' '+v.plate+' '+name(v.customer_id))).map(v=>v.id);
   if (query.view==='conversations') ids = [...s.conversations].sort((a,b)=>b.created_at.localeCompare(a.created_at)||a.id.localeCompare(b.id)).filter(c=>match(c.messages.map(m=>m.content).join(' '))).map(c=>c.id);
   if (query.view==='appointments') ids = appointments.map(a=>a.id);
+  if (query.view==='calendar') {
+    const rangeStart = new Date(query.range_start ?? '').getTime();
+    const rangeEnd = new Date(query.range_end ?? '').getTime();
+    ids = Number.isFinite(rangeStart) && Number.isFinite(rangeEnd) ? appointments.filter(a => {
+      const start = new Date(a.starts_at).getTime();
+      return start < rangeEnd && start + a.duration_minutes*60000 > rangeStart;
+    }).map(a=>a.id) : [];
+  }
   const total = ids.length;
-  ids = ids.slice(Math.max(0,query.offset),Math.max(0,query.offset)+PAGE_SIZE);
+  // Calendar has no pagination: a grid needs every appointment in the
+  // requested range, never just one 25-row page of it.
+  if (query.view !== 'calendar') ids = ids.slice(Math.max(0,query.offset),Math.max(0,query.offset)+PAGE_SIZE);
   const requestIds = new Set(query.view==='requests'?ids:query.view==='dashboard'?requests.slice(0,8).map(r=>r.id):[]);
-  const appointmentIds = new Set(query.view==='appointments'?ids:query.view==='dashboard'?appointments.filter(a=>a.status==='scheduled'&&new Date(a.starts_at)>=new Date()).slice(0,8).map(a=>a.id):[]);
+  const appointmentIds = new Set(query.view==='appointments'||query.view==='calendar'?ids:query.view==='dashboard'?appointments.filter(a=>a.status==='scheduled'&&new Date(a.starts_at)>=new Date()).slice(0,8).map(a=>a.id):[]);
   const conversationIds = new Set(query.view==='conversations'?ids:[]);
   const customerIds = new Set(query.view==='customers'?ids:[]);
   const vehicleIds = new Set(query.view==='vehicles'?ids:[]);

@@ -8,7 +8,7 @@ export class SupabaseRepository implements WorkshopRepository {
   constructor(private workshopId: string) {}
   async load(query = this.query): Promise<State> {
     this.query = query;
-    const {data,error}=await getSupabase().rpc('workspace_snapshot',{p_workshop_id:this.workshopId,p_view:query.view,p_offset:query.offset,p_search:query.search.slice(0,120),p_status:query.status});
+    const {data,error}=await getSupabase().rpc('workspace_snapshot',{p_workshop_id:this.workshopId,p_view:query.view,p_offset:query.offset,p_search:query.search.slice(0,120),p_status:query.status,p_range_start:query.range_start??null,p_range_end:query.range_end??null});
     if(error) throw new Error(databaseMessage(error));
     return data as State;
   }

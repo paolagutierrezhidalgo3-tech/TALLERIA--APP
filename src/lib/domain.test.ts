@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCommand, intakeSchema, isWorkshopEmpty, type Command, type Intake, type State } from './domain';
+import { applyCommand, businessHoursForDate, intakeSchema, isWorkshopEmpty, localMinutesOfDay, type Command, type Intake, type State } from './domain';
 import { MockReceptionProvider, questions } from './reception/provider';
 const now = new Date('2030-01-01T08:00:00Z');
 const intake: Intake = { name: 'Cliente Prueba', phone: '600 123 456', brand: 'SEAT', model: 'León', plate: '1234 bcd', reason: 'Revisión anual', availability: 'Mañanas', notes: '' };
@@ -99,6 +99,14 @@ describe('Horario estructurado', () => {
   it('sin horario configurado, las citas no están restringidas (igual que antes)', () => {
     const s = receive();
     expect(applyCommand(s, appointment(s), now).appointments).toHaveLength(1);
+  });
+  it('sin horario configurado, una cita que cruza la medianoche local tampoco está restringida', () => {
+    // Regression: businessHoursForDate's refactor must not make the
+    // midnight-crossing check run before the "no hours configured" bypass.
+    // 22:30Z = 23:30 local (Europe/Madrid, enero); +60min ends at 00:30
+    // local the next day -- genuinely crosses local midnight.
+    const s = receive();
+    expect(applyCommand(s, appointment(s, '2030-01-02T22:30:00Z', 60), now).appointments).toHaveLength(1);
   });
   it('bloquea una cita fuera de los tramos configurados y permite una dentro', () => {
     let s = receive();
@@ -216,6 +224,20 @@ describe('Horario estructurado', () => {
     s = applyCommand(s, { type: 'workshop_hours', hours_version: s.workshop.hours_version, ranges: [{ day_of_week: 5, opens_at: '09:00', closes_at: '10:00' }] }, past);
     expect(applyCommand(s, appointment(s, '2024-03-15T09:00:00Z', 15), past).appointments).toHaveLength(1);
     expect(() => applyCommand(s, appointment(s, '2024-03-15T08:00:00Z', 15), past)).toThrow('horario configurado');
+  });
+  it('businessHoursForDate: la misma resolución que is_within_business_hours usa, expuesta para la vista de calendario', () => {
+    // 2030-01-02 is a Wednesday (day_of_week 3); reused from the suite above.
+    let s = receive();
+    expect(businessHoursForDate(s, '2030-01-02')).toBeNull(); // sin horario configurado: sin restricción
+    s = applyCommand(s, { type: 'workshop_hours', hours_version: s.workshop.hours_version, ranges: [{ day_of_week: 3, opens_at: '09:00', closes_at: '14:00' }] }, now);
+    expect(businessHoursForDate(s, '2030-01-02')).toEqual([{ day_of_week: 3, opens_at: '09:00', closes_at: '14:00' }]);
+    expect(businessHoursForDate(s, '2030-01-03')).toEqual([]); // jueves: configurado, sin tramos ese día
+    s = applyCommand(s, { type: 'workshop_hour_exception', exception: { id: crypto.randomUUID(), workshop_id: s.workshop.id, exception_date: '2030-01-02', closed: false, opens_at: '15:00', closes_at: '18:00' } }, now);
+    expect(businessHoursForDate(s, '2030-01-02')).toEqual([{ day_of_week: 3, opens_at: '15:00', closes_at: '18:00' }]); // la excepción sustituye al horario semanal
+  });
+  it('localMinutesOfDay: minutos desde medianoche local, no UTC', () => {
+    expect(localMinutesOfDay(new Date('2030-01-02T09:30:00Z'), 'Europe/Madrid')).toBe(10 * 60 + 30); // UTC+1 en enero
+    expect(localMinutesOfDay(new Date('2030-01-02T00:15:00Z'), 'Europe/Madrid')).toBe(60 + 15);
   });
   it('una edición obsoleta no puede resucitar una excepción ya eliminada', () => {
     const s = receive();
