@@ -29,3 +29,67 @@ describe('workspace.tsx: menú lateral móvil', () => {
     expect(source).toMatch(/sidebarRef\.current\?\.querySelector[^]*?\.focus\(\)/);
   });
 });
+
+describe('workspace.tsx: aviso de solicitudes nuevas', () => {
+  // The actual freshness logic (two counters, six call sites racing each
+  // other) has real behavioral coverage in src/lib/read-coordinator.test.ts,
+  // including the exact interleavings an earlier, insufficient version of
+  // this fix got wrong. These only pin that each call site is wired to the
+  // shared ReadCoordinator instance (`reads`) the way that logic assumes.
+  it('execute() nunca dispara el aviso pasivo para la propia acción del usuario (solo un resync silencioso), y marca la mutación con reads.beginMutation()/endMutation()', () => {
+    const start = source.indexOf('async function execute(command: Command)');
+    const end = source.indexOf('async function refresh()');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const executeBlock = source.slice(start, end);
+    expect(executeBlock).toMatch(/checkForNewRequests\(result\.metrics,\s*false\)/);
+    expect(executeBlock).not.toMatch(/checkForNewRequests\([^)]*,\s*true\)/);
+    expect(executeBlock).toMatch(/reads\.beginMutation\(\)/);
+    expect(executeBlock).toMatch(/reads\.endMutation\(\)/);
+    // execute() never calls claimRead()/isFresh() for its own result -- it
+    // always applies unconditionally, per read-coordinator.ts's contract.
+    // (Checked on the code, not comments: a stray mention of reads.isFresh()
+    // while explaining *why* is fine and expected.)
+    const code = executeBlock.replace(/\/\/.*$/gm, '').replace(/\/\*[^]*?\*\//g, '');
+    expect(code).not.toMatch(/reads\.(claimRead|isFresh)\(/);
+  });
+  it('el poll de fondo comprueba mutationInProgress antes de arrancar y reads.isFresh() después de recibir la respuesta', () => {
+    const start = source.indexOf('async function poll()');
+    const end = source.indexOf('const interval = setInterval');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const pollBlock = source.slice(start, end);
+    const guardIndex = pollBlock.indexOf('reads.mutationInProgress');
+    const claimIndex = pollBlock.indexOf('reads.claimRead()');
+    const awaitIndex = pollBlock.indexOf('await withTimeout(repo.peekMetrics()');
+    const checkIndex = pollBlock.indexOf('reads.isFresh(claim)');
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(claimIndex).toBeGreaterThan(guardIndex);
+    expect(awaitIndex).toBeGreaterThan(claimIndex);
+    expect(checkIndex).toBeGreaterThan(awaitIndex);
+  });
+  it('load(), refresh(), la carga de página y el sync demo reclaman y comprueban frescura como cualquier lectura ordinaria; resetDemo() invalida las lecturas pendientes tras restablecer', () => {
+    const resetDemoBlock = source.slice(source.indexOf('async function resetDemo()'), source.indexOf('async function resetDemo()') + 800);
+    expect(resetDemoBlock).toMatch(/reads\.invalidatePendingReads\(\)/);
+    for (const fn of ['const load = useCallback(async (repo: WorkshopRepository)', 'async function refresh()', 'const sync = ()']) {
+      const start = source.indexOf(fn);
+      expect(start).toBeGreaterThan(-1);
+      const block = source.slice(start, start + 1400);
+      expect(block).toMatch(/reads\.claimRead\(\)/);
+      expect(block).toMatch(/reads\.isFresh\(claim\)/);
+    }
+  });
+  it('el efecto de carga por página reclama una lectura y comprueba su frescura antes de aplicar las métricas', () => {
+    const start = source.indexOf("if (screen !== 'app' || !repository.current || page === 'team') return;");
+    const end = source.indexOf('async function execute(command: Command)');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
+    const claimIndex = block.indexOf('reads.claimRead()');
+    const awaitIndex = block.indexOf('.load(query).then(');
+    const checkIndex = block.indexOf('reads.isFresh(metricsClaim)');
+    expect(claimIndex).toBeGreaterThan(-1);
+    expect(awaitIndex).toBeGreaterThan(claimIndex);
+    expect(checkIndex).toBeGreaterThan(awaitIndex);
+  });
+});

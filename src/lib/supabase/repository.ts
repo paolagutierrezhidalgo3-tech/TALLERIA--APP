@@ -6,11 +6,20 @@ import { getSupabase } from './client';
 export class SupabaseRepository implements WorkshopRepository {
   private query: ViewQuery = defaultQuery;
   constructor(private workshopId: string) {}
-  async load(query = this.query): Promise<State> {
-    this.query = query;
+  private async fetchSnapshot(query: ViewQuery): Promise<State> {
     const {data,error}=await getSupabase().rpc('workspace_snapshot',{p_workshop_id:this.workshopId,p_view:query.view,p_offset:query.offset,p_search:query.search.slice(0,120),p_status:query.status,p_range_start:query.range_start??null,p_range_end:query.range_end??null});
     if(error) throw new Error(databaseMessage(error));
     return data as State;
+  }
+  async load(query = this.query): Promise<State> {
+    this.query = query;
+    return this.fetchSnapshot(query);
+  }
+  // See WorkshopRepository.peekMetrics: deliberately bypasses `this.query` --
+  // 'settings' is the cheapest existing view (no request/appointment/
+  // customer/vehicle hydration at all) that still returns fresh metrics.
+  async peekMetrics(): Promise<State['metrics']> {
+    return (await this.fetchSnapshot({ view: 'settings', offset: 0, search: '', status: 'all' })).metrics;
   }
   async execute(command: Command): Promise<State> {
     // A paginated snapshot is not authoritative for uniqueness or scheduling.

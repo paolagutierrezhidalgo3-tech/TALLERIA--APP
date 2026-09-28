@@ -7,6 +7,12 @@ export interface WorkshopRepository {
   load(query?: ViewQuery): Promise<State>;
   execute(command: Command): Promise<State>;
   lookup(kind: 'customer' | 'request', search: string): Promise<LookupOption[]>;
+  // A side-effect-free check for what's new (used by the background poll in
+  // workspace.tsx): unlike load(), it must never change what query
+  // execute()'s post-mutation reload uses -- the poll runs on a fixed timer
+  // regardless of which page the user is on, and must not silently swap
+  // that page's remembered query out from under it.
+  peekMetrics(): Promise<State['metrics']>;
 }
 export const KEY = 'talleria.demo.v2';
 export const LEGACY = 'talleria.demo.v1';
@@ -32,6 +38,9 @@ export class DemoRepository implements WorkshopRepository {
   async load(query = this.query): Promise<State> {
     this.query = query;
     return projectState(this.read(),query);
+  }
+  async peekMetrics(): Promise<State['metrics']> {
+    return projectState(this.read(), { view: 'settings', offset: 0, search: '', status: 'all' }).metrics;
   }
   async execute(command: Command): Promise<State> {
     const save = async () => {

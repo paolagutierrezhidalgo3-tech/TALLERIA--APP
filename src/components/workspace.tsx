@@ -20,6 +20,21 @@ import type { FindOptions } from './lookup';
 import { Reception } from './reception';
 import { Calendar } from './calendar';
 import { calendarQueryFor } from '@/lib/calendar-layout';
+import { newRequestsMessage } from '@/lib/in-app-alerts';
+import { ReadCoordinator } from '@/lib/read-coordinator';
+import { withTimeout } from '@/lib/with-timeout';
+
+// How often the app checks, in the background, whether a new solicitud has
+// arrived (public reception, or another team member) while this tab stays
+// open without the user navigating -- the only thing that otherwise makes
+// state.metrics.new_requests advance. Paused while the tab isn't visible.
+const NEW_REQUESTS_POLL_MS = 30000;
+// A hung network request would otherwise leave `pollInFlight` (see the poll
+// effect) stuck at true forever, silently disabling every future tick since
+// nothing would ever reset it. Bounding the poll's own wait time (withTimeout)
+// guarantees its `finally` always runs within this long, so the poll
+// self-heals instead of being permanently disabled by one bad request.
+const POLL_TIMEOUT_MS = 15000;
 
 const pages = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Todo lo importante, de un vistazo.' },
@@ -48,6 +63,14 @@ export function Workspace() {
   // is still loading -- or forever, if that load then fails. State, not a
   // ref: it's read during render, so it must be able to trigger one.
   const [loadedCalendarKey, setLoadedCalendarKey] = useState<string | null>(null);
+  // The last new_requests count this session actually saw, to tell "a
+  // solicitud arrived since we last checked" from "this is just what the
+  // workshop already had" (the very first load) or "the count went down
+  // because staff processed one". Set from every successful snapshot this
+  // session sees, whichever page/poll it came from -- see
+  // checkForNewRequests -- so the comparison stays correct across
+  // navigation too, not just across polls.
+  const knownNewRequestsRef = useRef<number | null>(null);
   const find: FindOptions = useCallback((kind, text) => repository.current?.lookup(kind, text) ?? Promise.resolve([]), []);
   const mutation = useRef(false);
   const recovering = useRef(false);
@@ -77,20 +100,73 @@ export function Workspace() {
   const [conversation, setConversation] = useState<string | null>(null);
   const [editor, setEditor] = useState<Editor>(null);
   const [resetOpen, setResetOpen] = useState(false);
+  // A mutation's own post-write reload is the one read guaranteed to
+  // reflect at least the write it just made, so execute() always applies it
+  // unconditionally -- but that unconditional priority is exactly what makes
+  // every OTHER read here ("ordinary reads": the background poll, load(),
+  // refresh(), page navigation, and the demo cross-tab sync) unsafe to apply
+  // if a mutation touched their window at all, and ordering by which one
+  // *started* first isn't enough between two ordinary reads either, since
+  // whichever one resolves last can otherwise regress a value another
+  // already correctly applied. See src/lib/read-coordinator.ts for the two
+  // counters this uses and why a plain before/after boolean check on
+  // `mutation.current` (an earlier version of this fix) isn't sufficient: a
+  // mutation can start and finish entirely inside an ordinary read's round
+  // trip, leaving the flag back at false by the time that read checks it.
+  //
+  // This does not, and without a server-side monotonic marker cannot,
+  // protect a save's own reload against being stale relative to a
+  // *different*, genuinely concurrent external change (e.g. a new público
+  // solicitud landing in the same instant as an unrelated save elsewhere in
+  // the app) -- no purely client-side ordering can tell that case apart from
+  // the ordinary one. The next ordinary read to run once the save has fully
+  // finished (mutation.current false again) will correctly observe and
+  // announce it instead, delayed rather than lost -- the accepted trade-off
+  // here rather than adding new Supabase-side infrastructure for this block.
+  const [reads] = useState(() => new ReadCoordinator());
+  const pollInFlight = useRef(false);
+  // `notify=false` is a silent resync (used after the user's own mutation or
+  // an explicit refresh): the ref must still track the real count, or the
+  // next passive check compares against a stale number and can misfire in
+  // either direction -- but those actions already have their own
+  // confirmation, so they must never also trigger "ha llegado una solicitud
+  // nueva".
+  function checkForNewRequests(metrics: State['metrics'], notify: boolean) {
+    if (notify) {
+      const message = newRequestsMessage(knownNewRequestsRef.current, metrics?.new_requests);
+      if (message) setNotice(message);
+    }
+    if (metrics?.new_requests !== undefined) knownNewRequestsRef.current = metrics.new_requests;
+  }
   const load = useCallback(async (repo: WorkshopRepository) => {
     repository.current = repo;
+    // load() is a plain read like any other ordinary one (poll, refresh,
+    // navigation, demo sync), not a write -- it has no special claim to
+    // being fresher than a concurrent one of those. It usually is the very
+    // first read of a brand-new session, when nothing else could possibly
+    // be racing it, but it CAN be re-triggered while already in 'app' (a
+    // Supabase auth token refresh), so it claims and checks like everyone
+    // else instead of assuming it always wins.
+    const claim = reads.claimRead();
     try {
       setPage('dashboard'); setOffset(0); setSearch(''); setFilter('all'); queryKey.current = JSON.stringify(defaultQuery);
       const next = await repo.load(defaultQuery);
       // A password-recovery event may have taken over the screen while this
       // was in flight; never let a stale load overwrite it.
       if (recovering.current) return;
-      setState(next); setScreen('app'); setError('');
+      const fresh = reads.isFresh(claim);
+      // Baseline for this (possibly new) workshop/session -- silent, no
+      // notice: whatever new_requests already was before this tab opened is
+      // not "new" by definition. Only set when still fresh; otherwise a
+      // faster concurrent read already established the real baseline.
+      if (fresh) knownNewRequestsRef.current = next.metrics?.new_requests ?? null;
+      setState(prev => (fresh || !prev ? next : { ...next, metrics: prev.metrics }));
+      setScreen('app'); setError('');
     } catch (err) {
       if (recovering.current) return;
       setError(err instanceof Error ? err.message : 'No se han podido cargar los datos.'); setScreen('auth');
     }
-  }, []);
+  }, [reads]);
   useEffect(() => {
     if (!isSupabaseMode) return;
     const raw = (window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '') || window.location.search.slice(1);
@@ -158,10 +234,64 @@ export function Workspace() {
   }, [notice]);
   useEffect(() => {
     if (isSupabaseMode) return;
-    const sync = () => { if (repository.current && screen === 'app') void repository.current.load().then(setState).catch(() => setError('No se han podido actualizar los datos demo.')); };
+    const sync = () => {
+      if (!repository.current || screen !== 'app') return;
+      const claim = reads.claimRead();
+      void repository.current.load().then(next => {
+        const fresh = reads.isFresh(claim);
+        setState(prev => (fresh ? next : (prev ? { ...next, metrics: prev.metrics } : next)));
+        if (fresh) checkForNewRequests(next.metrics, true);
+      }).catch(() => setError('No se han podido actualizar los datos demo.'));
+    };
     window.addEventListener('storage', sync);
     return () => window.removeEventListener('storage', sync);
-  }, [load, screen]);
+  }, [load, screen, reads]);
+  useEffect(() => {
+    // Background awareness of new solicitudes for a tab that just stays open
+    // on one page: everything else that refreshes state.metrics.new_requests
+    // (navigation, a manual refresh, a mutation's own reload, the demo
+    // cross-tab listener above) only happens when the user does something.
+    // This is the only thing that checks on its own, on a timer, paused
+    // while the tab isn't visible so a backgrounded tab doesn't poll for
+    // nothing.
+    //
+    // Deliberately uses peekMetrics(), never load(): this runs on a fixed
+    // interval regardless of which page/query the user currently has open,
+    // and load() remembers whatever query it's given as "the" query that
+    // execute()'s post-mutation reload reuses afterward -- a poll must never
+    // overwrite that with an unrelated view.
+    if (screen !== 'app') return;
+    let cancelled = false;
+    async function poll() {
+      // Captured up front: `screen` alone doesn't change across a demo role
+      // switch or "Restablecer demo" (both stay on 'app' and just swap
+      // repository.current), so an in-flight poll checked only `cancelled`
+      // could still apply a just-abandoned workshop's metrics to the new
+      // one. Comparing identity after the await catches that, the same way
+      // the page-data effect guards against an out-of-order response with
+      // `sequence === loadSequence.current`.
+      //
+      // `pollInFlight` is just an efficiency guard (skip a redundant
+      // request); the actual correctness against overlapping polls, a
+      // concurrent mutation, or a concurrent load()/refresh()/navigation
+      // comes from `reads.isFresh()` below -- see read-coordinator.ts.
+      const repo = repository.current;
+      if (!repo || document.visibilityState !== 'visible' || reads.mutationInProgress || pollInFlight.current) return;
+      pollInFlight.current = true;
+      const claim = reads.claimRead();
+      try {
+        const metrics = await withTimeout(repo.peekMetrics(), POLL_TIMEOUT_MS);
+        if (cancelled || repository.current !== repo || !reads.isFresh(claim)) return;
+        checkForNewRequests(metrics, true);
+        setState(prev => (prev && metrics ? { ...prev, metrics } : prev));
+      } catch { /* a silent background check failing isn't worth an error banner; the next tick tries again */ }
+      finally { pollInFlight.current = false; }
+    }
+    const interval = setInterval(() => void poll(), NEW_REQUESTS_POLL_MS);
+    function onVisibilityChange() { if (document.visibilityState === 'visible') void poll(); }
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener('visibilitychange', onVisibilityChange); };
+  }, [screen, reads]);
   const timezone = state?.workshop.timezone;
   useEffect(() => {
     // 'team' is a local page backed by its own RPCs (see team.tsx), not by
@@ -174,29 +304,57 @@ export function Workspace() {
     const key = JSON.stringify(query);
     if (queryKey.current === key) return;
     const sequence = ++loadSequence.current;
+    const metricsClaim = reads.claimRead();
     let active = true;
     const timer = setTimeout(() => {
       setDataLoading(true);
       void repository.current!.load(query).then(next => {
         if (active && sequence === loadSequence.current) {
-          setState(next); queryKey.current = key;
+          const fresh = reads.isFresh(metricsClaim);
+          setState(prev => (fresh ? next : { ...next, metrics: prev?.metrics ?? next.metrics }));
+          queryKey.current = key;
           if (isCalendar) setLoadedCalendarKey(key);
+          if (fresh) checkForNewRequests(next.metrics, true);
         }
       }).catch(err => setError(err instanceof Error ? err.message : 'No se pueden cargar los datos.'))
         .finally(() => { if (active && sequence === loadSequence.current) setDataLoading(false); });
     }, search ? 200 : 0);
     return () => { active = false; clearTimeout(timer); };
-  }, [screen, page, offset, search, filter, agendaView, calendarMode, calendarAnchor, timezone]);
+  }, [screen, page, offset, search, filter, agendaView, calendarMode, calendarAnchor, timezone, reads]);
   async function execute(command: Command) {
     if (!repository.current || mutation.current) return false;
-    mutation.current = true; setBusy(true); setError('');
-    try { setState(await repository.current.execute(command)); setNotice('Cambios guardados'); return true; }
+    mutation.current = true; reads.beginMutation(); setBusy(true); setError('');
+    // reads.beginMutation()/endMutation() bracket this whole call, the same
+    // way mutation.current already does; the poll (and every other ordinary
+    // read) defers to it via reads.isFresh() -- see read-coordinator.ts for
+    // why a plain before/after check on mutation.current isn't enough on its
+    // own. The result below always applies unconditionally on success -- a
+    // save's own reload is the one read that must never defer to anything
+    // else, since it's guaranteed to reflect the write it just made -- but
+    // knownNewRequestsRef still needs a silent resync (notify=false): the
+    // count this mutation itself just changed (e.g. creating a solicitud
+    // from Recepción) must not be mistaken for a passively-discovered
+    // arrival on the next check.
+    try {
+      const result = await repository.current.execute(command);
+      setState(result);
+      checkForNewRequests(result.metrics, false);
+      setNotice('Cambios guardados');
+      return true;
+    }
     catch (err) { setError(err instanceof Error ? err.message : 'No se han podido guardar los cambios.'); return false; }
-    finally { mutation.current = false; setBusy(false); }
+    finally { mutation.current = false; reads.endMutation(); setBusy(false); }
   }
   async function refresh() {
     if (!repository.current || busy) return;
-    try { const next = await repository.current.load(); setState(next); setEditor(null); setSelected(null); setConversation(null); setCancelId(null); setError(''); setNotice('Datos actualizados. Puedes volver a abrir el registro.'); }
+    const claim = reads.claimRead();
+    try {
+      const next = await repository.current.load();
+      const fresh = reads.isFresh(claim);
+      setState(prev => (fresh ? next : (prev ? { ...next, metrics: prev.metrics } : next)));
+      if (fresh) checkForNewRequests(next.metrics, false);
+      setEditor(null); setSelected(null); setConversation(null); setCancelId(null); setError(''); setNotice('Datos actualizados. Puedes volver a abrir el registro.');
+    }
     catch { setError('No se han podido actualizar los datos. Vuelve a intentarlo.'); }
   }
   async function onboarding(e: FormEvent<HTMLFormElement>) {
@@ -242,7 +400,20 @@ export function Workspace() {
     catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido cerrar la sesión.'); }
   }
   function navigate(next: Page) { setOffset(0); setFilter('all'); setPage(next); setSearch(''); setSelected(null); setConversation(null); setMobile(false); setError(''); }
-  async function resetDemo() { try { await load(new DemoRepository()); const next = await new DemoRepository().reset(); setState(next); setScreen('app'); setResetOpen(false); setNotice('Demo restablecida'); } catch { setError('No se puede guardar la demo. Comprueba que el navegador permita el almacenamiento local.'); } }
+  async function resetDemo() {
+    try {
+      await load(new DemoRepository());
+      const next = await new DemoRepository().reset();
+      // repository.current keeps the same instance load() just set (reset()
+      // only rewrites the localStorage it reads from), so a poll already in
+      // flight against it would pass the identity check untouched --
+      // invalidate pending reads again, so it can't apply pre-reset data
+      // afterward.
+      reads.invalidatePendingReads();
+      knownNewRequestsRef.current = next.metrics?.new_requests ?? null;
+      setState(next); setScreen('app'); setResetOpen(false); setNotice('Demo restablecida');
+    } catch { setError('No se puede guardar la demo. Comprueba que el navegador permita el almacenamiento local.'); }
+  }
   const errorBanner = error && <div className="error-toast" role="alert"><span>{error}</span>{screen === 'app' && <button className="text-button" disabled={busy} onClick={() => void refresh()}>Actualizar datos</button>}<button className="icon-button" aria-label="Cerrar aviso" onClick={() => setError('')}><X size={17}/></button></div>;
   if (screen === 'loading') return <main className="loading"><Wrench size={32}/><p>Preparando tu taller…</p></main>;
   if (screen === 'auth') return <>{errorBanner}<AuthScreen onDemo={() => void load(new DemoRepository())}/>{!isSupabaseMode && error && <button className="recovery button" onClick={() => setResetOpen(true)}>Restablecer demo</button>}{resetOpen && <Modal title="Restablecer datos demo" onClose={() => setResetOpen(false)}><p>Se borrarán los cambios guardados de la demo en este navegador.</p><button className="button primary" onClick={() => void resetDemo()}>Restablecer datos</button></Modal>}</>;
