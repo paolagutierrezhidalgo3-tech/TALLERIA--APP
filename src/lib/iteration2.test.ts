@@ -40,4 +40,25 @@ describe('Reglas de la segunda iteración en demo',()=>{
   expect(projectState(s,{view:'calendar',offset:0,search:'',status:'all'}).appointments).toHaveLength(0);
   expect(projectState(s,{view:'calendar',offset:0,search:'',status:'all',range_start:'no-es-una-fecha',range_end:'2030-01-02T10:00:00Z'}).appointments).toHaveLength(0);
  });
+ it('lista de citas: filtra por búsqueda (motivo/cliente/matrícula) y por estado, igual que la lista de solicitudes',()=>{
+  let s=applyCommand(base(),{type:'intake',id:crypto.randomUUID(),data:{name:'Ana García',phone:'600222333',brand:'SEAT',model:'Ibiza',plate:'1111AAA',reason:'Revisión anual',availability:'Mañanas',notes:''},messages:[{role:'user',content:'Revisión'}]},now);
+  s=applyCommand(s,{type:'intake',id:crypto.randomUUID(),data:{name:'Bruno Ruiz',phone:'600444555',brand:'OPEL',model:'Astra',plate:'2222BBB',reason:'Cambio de frenos',availability:'Tardes',notes:''},messages:[{role:'user',content:'Frenos'}]},now);
+  const resource=s.resources![0].id;
+  const anaCustomer=s.customers.find(c=>c.name==='Ana García')!, brunoCustomer=s.customers.find(c=>c.name==='Bruno Ruiz')!;
+  const anaReq=s.requests.find(r=>r.customer_id===anaCustomer.id)!, brunoReq=s.requests.find(r=>r.customer_id===brunoCustomer.id)!;
+  const cmd=(id:string,request:typeof anaReq,starts_at:string)=>({type:'appointment' as const,id,request_id:request.id,request_version:request.version,resource_id:resource,starts_at,duration_minutes:30,notes:''});
+  const aptAna=crypto.randomUUID(), aptBruno=crypto.randomUUID();
+  s=applyCommand(s,cmd(aptAna,anaReq,'2030-01-02T09:00:00Z'),now);
+  s=applyCommand(s,cmd(aptBruno,brunoReq,'2030-01-02T10:00:00Z'),now);
+  const q={view:'appointments' as const,offset:0,search:'',status:'all'};
+  expect(projectState(s,{...q,search:'Ana'}).appointments.map(a=>a.id)).toEqual([aptAna]);
+  expect(projectState(s,{...q,search:'1111aaa'}).appointments.map(a=>a.id)).toEqual([aptAna]);
+  const bruno=s.appointments.find(a=>a.id===aptBruno)!;
+  expect(projectState(s,{...q,search:'frenos'}).appointments.map(a=>a.id)).toEqual([aptBruno]); // término que solo aparece en el motivo, no en nombre/matrícula
+  s=applyCommand(s,{type:'appointment_status',id:aptBruno,status:'completed',version:bruno.version,request_version:s.requests.find(r=>r.id===bruno.request_id)!.version},now);
+  expect(projectState(s,{...q,status:'completed'}).appointments.map(a=>a.id)).toEqual([aptBruno]);
+  expect(projectState(s,{...q,status:'scheduled'}).appointments.map(a=>a.id)).toEqual([aptAna]);
+  expect(projectState(s,{...q,search:'bruno',status:'completed'}).appointments.map(a=>a.id)).toEqual([aptBruno]); // búsqueda + estado combinados
+  expect(projectState(s,{...q,search:'ana',status:'completed'}).appointments).toHaveLength(0); // el nombre coincide pero el estado no
+ });
 });

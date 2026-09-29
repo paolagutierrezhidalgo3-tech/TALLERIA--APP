@@ -535,6 +535,44 @@ describe('Vista de calendario: workspace_snapshot(calendar, rango)', () => {
     await expect(snapshotCalendar('2031-02-02T00:00:00Z', '2031-02-03T00:00:00Z')).rejects.toThrow('acceso');
   });
 });
+describe('Lista de citas: workspace_snapshot(appointments, búsqueda/estado)', () => {
+  const owner = '10000000-0000-4000-8000-000000000024';
+  let workshop: string, resource: string;
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id) values($1)', [owner]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller citas') id")).rows[0].id;
+    resource = (await db.query<{ id: string }>('select id from public.resources where workshop_id=$1', [workshop])).rows[0].id;
+  });
+  async function snapshotAppointments(search = '', status = 'all') {
+    return (await db.query<{ s: { appointments: { id: string }[]; page_info: { total: number } } }>(
+      "select public.workspace_snapshot($1,'appointments',0,$2,$3) s", [workshop, search, status],
+    )).rows[0].s;
+  }
+  it('busca por motivo, cliente y matrícula, y filtra por estado, igual que la lista de solicitudes', async () => {
+    await asUser(owner);
+    await execute(workshop, intake('622444001', '3000AAA'));
+    const anaIntake = { ...intake('622444002', '3000AAB'), data: { name: 'Ana García', phone: '622444002', brand: 'SEAT', model: 'Ibiza', plate: '3000AAB', reason: 'Revisión anual', availability: 'Mañanas', notes: '' } };
+    await execute(workshop, anaIntake);
+    const brunoIntake = { ...intake('622444003', '3000AAC'), data: { name: 'Bruno Ruiz', phone: '622444003', brand: 'OPEL', model: 'Astra', plate: '3000AAC', reason: 'Cambio de frenos', availability: 'Tardes', notes: '' } };
+    await execute(workshop, brunoIntake);
+    const ana = (await db.query<{ id: string; version: number }>('select id,version from public.requests where id=$1', [anaIntake.id])).rows[0];
+    const bruno = (await db.query<{ id: string; version: number }>('select id,version from public.requests where id=$1', [brunoIntake.id])).rows[0];
+    const aptAna = crypto.randomUUID(), aptBruno = crypto.randomUUID();
+    await execute(workshop, { type: 'appointment', id: aptAna, request_id: ana.id, request_version: ana.version, resource_id: resource, starts_at: '2031-03-02T09:00:00Z', duration_minutes: 30, notes: '' });
+    await execute(workshop, { type: 'appointment', id: aptBruno, request_id: bruno.id, request_version: bruno.version, resource_id: resource, starts_at: '2031-03-02T10:00:00Z', duration_minutes: 30, notes: '' });
+    expect((await snapshotAppointments('Ana')).appointments.map(a => a.id)).toEqual([aptAna]);
+    expect((await snapshotAppointments('3000aab')).appointments.map(a => a.id)).toEqual([aptAna]);
+    expect((await snapshotAppointments('frenos')).appointments.map(a => a.id)).toEqual([aptBruno]);
+    const brunoAppointment = (await db.query<{ version: number }>('select version from public.appointments where id=$1', [aptBruno])).rows[0];
+    await execute(workshop, { type: 'appointment_status', id: aptBruno, version: brunoAppointment.version, request_version: bruno.version + 1, status: 'completed' });
+    expect((await snapshotAppointments('', 'completed')).appointments.map(a => a.id)).toEqual([aptBruno]);
+    expect((await snapshotAppointments('', 'scheduled')).appointments.map(a => a.id)).toEqual([aptAna]);
+    expect((await snapshotAppointments('bruno', 'completed')).appointments.map(a => a.id)).toEqual([aptBruno]); // búsqueda + estado combinados
+    expect((await snapshotAppointments('ana', 'completed')).appointments).toHaveLength(0); // el nombre coincide pero el estado no
+  });
+});
 describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada más', () => {
   let slugA: string;
   beforeAll(async () => {

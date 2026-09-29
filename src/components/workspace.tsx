@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDownLeft, ArrowRight, CalendarDays, Car, Check, ChevronRight, Inbox, LayoutDashboard, LogOut, Menu, MessageSquare, Plus, Search, Settings2, Sparkles, UserPlus, Users, Wrench, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { isWorkshopEmpty, localDateParts, statusLabels, statuses, type Appointment, type Command, type Customer, type RequestStatus, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
+import { appointmentStatusLabels, appointmentStatuses, isWorkshopEmpty, localDateParts, statusLabels, statuses, type Appointment, type Command, type Customer, type RequestStatus, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
 import { DemoRepository, type WorkshopRepository } from '@/lib/repository';
 import { getSupabase, isSupabaseMode } from '@/lib/supabase/client';
 import { SupabaseRepository } from '@/lib/supabase/repository';
@@ -80,10 +80,16 @@ export function Workspace() {
   const [passwordUpdated, setPasswordUpdated] = useState(false);
   const [page, setPage] = useState<Page>('dashboard');
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState<RequestStatus | 'all'>('all');
+  const [filter, setFilter] = useState<RequestStatus | Appointment['status'] | 'all'>('all');
   const [agendaView, setAgendaView] = useState<'calendar' | 'list'>('calendar');
   const [calendarMode, setCalendarMode] = useState<'day' | 'week'>('week');
   const [calendarAnchor, setCalendarAnchor] = useState<string | null>(null);
+  // Client-side only: the calendar already loads every appointment in the
+  // visible range (see the 'calendar' view query below), so narrowing what's
+  // shown by resource/status needs no new query param -- unlike the paginated
+  // list's search/status, which do go through `filter`/`search` above.
+  const [calendarResourceFilter, setCalendarResourceFilter] = useState<'all' | string>('all');
+  const [calendarStatusFilter, setCalendarStatusFilter] = useState<Appointment['status'] | 'all'>('all');
   const [mobile, setMobile] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -399,7 +405,7 @@ export function Workspace() {
     try { if (isSupabaseMode) { const { error } = await getSupabase().auth.signOut(); if (error) throw error; } repository.current = null; setState(null); setPage('dashboard'); setSelected(null); setConversation(null); setEditor(null); setScreen('auth'); }
     catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido cerrar la sesión.'); }
   }
-  function navigate(next: Page) { setOffset(0); setFilter('all'); setPage(next); setSearch(''); setSelected(null); setConversation(null); setMobile(false); setError(''); }
+  function navigate(next: Page) { setOffset(0); setFilter('all'); setPage(next); setSearch(''); setSelected(null); setConversation(null); setMobile(false); setError(''); setCalendarResourceFilter('all'); setCalendarStatusFilter('all'); }
   async function resetDemo() {
     try {
       await load(new DemoRepository());
@@ -462,9 +468,11 @@ export function Workspace() {
   {page === 'conversations' && <section className="card"><div className="list-toolbar"><SearchInput value={search} onChange={value => { setOffset(0); setSearch(value); }} placeholder="Buscar en las conversaciones…"/><span className="muted">{state.conversations.length} conversaciones</span></div>{state.conversations.filter(c => onPage(c.id)).map(c => { const r = state.requests.find(r => r.conversation_id === c.id); return <button key={c.id} className="conversation-row" onClick={() => setConversation(c.id)}><span className="avatar"><MessageSquare size={19}/></span><div><b>{r ? customer(r.customer_id)?.name : 'Recepción'}</b><p>{r?.reason ?? 'Conversación simulada'}</p><small>{dateLabel(c.created_at, state.workshop.timezone)} · Simulador</small></div><ChevronRight size={19}/></button>; })}{!state.conversations.filter(c => onPage(c.id)).length && <Empty title="No hay conversaciones"/>}</section>}
   {page === 'appointments' && <>
     <div className="list-toolbar"><div><h2>Agenda del taller</h2><p className="muted">Zona horaria: {state.workshop.timezone}</p></div><div className="agenda-toolbar-actions"><div className="calendar-mode-toggle" role="group" aria-label="Calendario o lista"><button type="button" className={agendaView === 'calendar' ? 'active' : ''} aria-pressed={agendaView === 'calendar'} onClick={() => setAgendaView('calendar')}>Calendario</button><button type="button" className={agendaView === 'list' ? 'active' : ''} aria-pressed={agendaView === 'list'} onClick={() => setAgendaView('list')}>Lista</button></div><button className="button primary" onClick={() => setEditor({ type: 'appointment' })}><Plus size={16}/>Nueva cita</button></div></div>
+    {agendaView === 'list' && <div className="list-toolbar"><SearchInput value={search} onChange={value => { setOffset(0); setSearch(value); }} placeholder="Buscar cliente, matrícula o motivo…"/><label className="filter-label">Estado<select value={filter} onChange={e => { setOffset(0); setFilter(e.target.value as Appointment['status'] | 'all'); }}><option value="all">Todos los estados</option>{appointmentStatuses.map(s => <option value={s} key={s}>{appointmentStatusLabels[s]}</option>)}</select></label></div>}
+    {agendaView === 'calendar' && (state.resources?.length ?? 0) > 0 && <div className="list-toolbar"><label className="filter-label">Recurso<select value={calendarResourceFilter} onChange={e => setCalendarResourceFilter(e.target.value)}><option value="all">Todos los recursos</option>{state.resources!.map(r => <option value={r.id} key={r.id}>{r.name}</option>)}</select></label><label className="filter-label">Estado<select value={calendarStatusFilter} onChange={e => setCalendarStatusFilter(e.target.value as Appointment['status'] | 'all')}><option value="all">Todos los estados</option>{appointmentStatuses.map(s => <option value={s} key={s}>{appointmentStatusLabels[s]}</option>)}</select></label></div>}
     {agendaView === 'calendar'
-      ? <Calendar state={state} appointments={loadedCalendarKey === JSON.stringify(calendarQueryFor(calendarAnchor ?? todayISO, calendarMode, state.workshop.timezone)) && state.page_info?.view === 'calendar' ? state.page_info.ids.flatMap(id => state.appointments.filter(a => a.id === id)) : []} busy={busy} execute={execute} mode={calendarMode} onModeChange={setCalendarMode} anchor={calendarAnchor ?? todayISO} onAnchorChange={setCalendarAnchor} onCreate={(resourceId, startsAt) => setEditor({ type: 'appointment', initialResourceId: resourceId, initialStartsAt: startsAt })} onReprogram={a => setEditor({ type: 'appointment', initial: a })} onCancel={a => setCancelId({ id: a.id, version: a.version, request_version: state!.requests.find(r => r.id === a.request_id)?.version })}/>
-      : <section className="card">{state.appointments.length ? (state.page_info?.ids ?? []).flatMap(id => state.appointments.filter(a => a.id === id)).map(appointmentCard) : <Empty title="Tu agenda está lista">Crea una solicitud y asígnale su primera cita.</Empty>}</section>}
+      ? <Calendar state={state} appointments={(loadedCalendarKey === JSON.stringify(calendarQueryFor(calendarAnchor ?? todayISO, calendarMode, state.workshop.timezone)) && state.page_info?.view === 'calendar' ? state.page_info.ids.flatMap(id => state.appointments.filter(a => a.id === id)) : []).filter(a => (calendarResourceFilter === 'all' || a.resource_id === calendarResourceFilter) && (calendarStatusFilter === 'all' || a.status === calendarStatusFilter))} busy={busy} execute={execute} mode={calendarMode} onModeChange={setCalendarMode} anchor={calendarAnchor ?? todayISO} onAnchorChange={setCalendarAnchor} onCreate={(resourceId, startsAt) => setEditor({ type: 'appointment', initialResourceId: resourceId, initialStartsAt: startsAt })} onReprogram={a => setEditor({ type: 'appointment', initial: a })} onCancel={a => setCancelId({ id: a.id, version: a.version, request_version: state!.requests.find(r => r.id === a.request_id)?.version })}/>
+      : <section className="card">{state.appointments.length ? (state.page_info?.ids ?? []).flatMap(id => state.appointments.filter(a => a.id === id)).map(appointmentCard) : (search || filter !== 'all' ? <Empty title="No se encontraron citas">Prueba otra búsqueda o cambia el filtro de estado.</Empty> : <Empty title="Tu agenda está lista">Crea una solicitud y asígnale su primera cita.</Empty>)}</section>}
   </>}
   {page === 'reception' && <Reception execute={execute} onCreated={() => { navigate('requests'); setFilter('nueva'); setNotice('Solicitud creada con su cliente, vehículo y conversación'); }}/>}
   {page === 'team' && owner && isSupabaseMode && <Team state={state}/>}

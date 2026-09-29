@@ -24,6 +24,8 @@ export interface Vehicle { version?: number; id: string; workshop_id: string; cu
 export interface Conversation { id: string; workshop_id: string; messages: Message[]; channel: 'simulator' | 'public'; created_at: string }
 export interface ServiceRequest { version?: number; consent_at?: string | null; id: string; workshop_id: string; customer_id: string; vehicle_id: string; conversation_id: string; reason: string; availability: string; notes: string; status: RequestStatus; created_at: string }
 export interface Appointment { version?: number; resource_id?: string; id: string; workshop_id: string; request_id: string; starts_at: string; duration_minutes: number; status: 'scheduled' | 'completed' | 'cancelled'; notes: string }
+export const appointmentStatuses = ['scheduled', 'completed', 'cancelled'] as const;
+export const appointmentStatusLabels: Record<Appointment['status'], string> = { scheduled: 'Programada', completed: 'Completada', cancelled: 'Cancelada' };
 export interface Resource { id: string; workshop_id: string; name: string; kind: 'bay' | 'mechanic' | 'lift'; active: boolean; version?: number }
 export interface AuditEvent { id: string; workshop_id: string; user_id: string | null; action: string; entity_type: string; entity_id: string; created_at: string; metadata?: Record<string, unknown> }
 // day_of_week is ISO: 1=lunes .. 7=domingo. A day with no ranges is closed.

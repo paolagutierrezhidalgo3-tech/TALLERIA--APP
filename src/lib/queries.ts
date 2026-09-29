@@ -21,7 +21,10 @@ export function projectState(s: State, query: ViewQuery = defaultQuery): State {
   if (query.view==='customers') ids = [...s.customers].sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id)).filter(c=>match(c.name+' '+c.phone)).map(c=>c.id);
   if (query.view==='vehicles') ids = [...s.vehicles].sort((a,b)=>a.brand.localeCompare(b.brand)||a.id.localeCompare(b.id)).filter(v=>match(v.brand+' '+v.model+' '+v.plate+' '+name(v.customer_id))).map(v=>v.id);
   if (query.view==='conversations') ids = [...s.conversations].sort((a,b)=>b.created_at.localeCompare(a.created_at)||a.id.localeCompare(b.id)).filter(c=>match(c.messages.map(m=>m.content).join(' '))).map(c=>c.id);
-  if (query.view==='appointments') ids = appointments.map(a=>a.id);
+  if (query.view==='appointments') ids = appointments.filter(a => {
+    const req = s.requests.find(r=>r.id===a.request_id);
+    return (query.status==='all'||a.status===query.status) && match((req?.reason??'')+' '+name(req?.customer_id??'')+' '+plate(req?.vehicle_id??''));
+  }).map(a=>a.id);
   if (query.view==='calendar') {
     const rangeStart = new Date(query.range_start ?? '').getTime();
     const rangeEnd = new Date(query.range_end ?? '').getTime();
