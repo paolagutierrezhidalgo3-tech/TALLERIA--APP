@@ -306,7 +306,7 @@ Actualizar al finalizar cada sesión significativa y al cerrar cada bloque. Mant
 | Commit/push de este bloque | Confirmado: `edc266e`, a petición explícita del usuario ("Sí, haz commit y push, y actualiza el Plan Maestro") |
 | Checks de este bloque | Ver "Resultado verificado" arriba |
 | Prueba manual real | No realizada en esta sesión: la extensión Claude in Chrome no está conectada. Pendiente, no bloqueante |
-| Despliegue | El CI de GitHub Actions se disparará con el push de `edc266e`, igual que en bloques anteriores (sección 7, punto 9); no verificado todavía en esta actualización del plan (registrar el resultado real cuando se compruebe, sin darlo por hecho) |
+| Despliegue | Realizado y verificado: CI de GitHub Actions en success para el commit `004936e` (jobs `Typecheck, lint, test, build` y `Deploy to Vercel (production)`, ambos `success`, confirmado vía la API pública de GitHub); producción respondiendo 200 en `https://talleria-app.vercel.app` |
 | Bloqueos o limitaciones | Ninguno nuevo. Pendiente de decisión del usuario: si aplicar la migración 013 a Supabase real ahora o más adelante (sin urgencia, ver "Supabase real" arriba) |
 | Próximo paso exacto | Preguntar al usuario si aplicar la migración 013 a Supabase real. Cuando lo priorice: prueba manual real de la búsqueda/filtro en navegador (pendiente, no bloqueante). Siguiente bloque del roadmap: no decidido todavía (sección 7, punto 16) |
 
@@ -907,8 +907,8 @@ Build: pnpm run build -- correcto (verificado dos veces: antes y después del ha
 Pruebas manuales: no realizadas en esta sesión (extensión Claude in Chrome no conectada)
 Revisión de Codex: una ronda efectiva sobre el bloque completo (un intento inicial no llegó a ejecutarse por la misma caída de infraestructura ya conocida). Sin bloqueantes; un hallazgo menor corregido (mensaje de agenda vacía) y cobertura de test ampliada. Detalle completo en el checkpoint de la sección 12
 Commit de cierre confirmado: sí -- edc266e, a petición explícita del usuario ("Sí, haz commit y push, y actualiza el Plan Maestro")
-Push: pendiente de confirmar en esta misma actualización (se empuja junto con este cierre)
-Despliegue: se disparará con el push de edc266e (CI de GitHub Actions); no verificado todavía en esta actualización del plan
+Push: confirmado (7c8c5a8..004936e a origin/main)
+Despliegue: realizado y verificado -- CI de GitHub Actions (jobs "Typecheck, lint, test, build" y "Deploy to Vercel (production)") en success para el commit 004936e; producción respondiendo 200 en https://talleria-app.vercel.app
 Bloqueos o limitaciones: ninguno técnico nuevo. Pendiente de decisión del usuario: aplicar o no la migración 013 a Supabase real, sin urgencia
 Próximo paso exacto: preguntar al usuario si aplicar la migración 013 a Supabase real; cuando lo priorice, prueba manual real de la búsqueda/filtro en navegador; siguiente bloque del roadmap: no decidido todavía (sección 7, punto 16)
 Actualización de este plan versionada: sí, en el mismo commit que este cierre
