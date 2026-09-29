@@ -573,6 +573,57 @@ describe('Lista de citas: workspace_snapshot(appointments, búsqueda/estado)', (
     expect((await snapshotAppointments('ana', 'completed')).appointments).toHaveLength(0); // el nombre coincide pero el estado no
   });
 });
+describe('Ficha de cliente/vehículo: workspace_snapshot(customer_detail/vehicle_detail)', () => {
+  const owner = '10000000-0000-4000-8000-000000000025';
+  let workshop: string, resource: string;
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id) values($1)', [owner]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller ficha') id")).rows[0].id;
+    resource = (await db.query<{ id: string }>('select id from public.resources where workshop_id=$1', [workshop])).rows[0].id;
+  });
+  async function snapshotDetail(view: 'customer_detail' | 'vehicle_detail', entityId: string, ws = workshop) {
+    return (await db.query<{ s: { customers: { id: string }[]; vehicles: { id: string }[]; requests: { id: string }[]; appointments: { id: string; status: string }[] } }>(
+      "select public.workspace_snapshot($1,$2,0,'','all',null,null,$3) s", [ws, view, entityId],
+    )).rows[0].s;
+  }
+  it('ficha de cliente: reúne todos sus vehículos (incluso sin solicitudes) y todas sus citas (cualquier estado), sin fugas a otro taller', async () => {
+    await asUser(owner);
+    await execute(workshop, intake('622555001', '4000AAA'));
+    const customer = (await db.query<{ id: string }>('select id from public.customers where phone_e164=$1', ['+34622555001'])).rows[0];
+    const segundoVehiculo = { id: crypto.randomUUID(), workshop_id: workshop, customer_id: customer.id, brand: 'Renault', model: 'Clio', plate: '4000AAB' };
+    await execute(workshop, { type: 'vehicle', vehicle: segundoVehiculo }); // un segundo coche, sin ninguna solicitud todavía
+    const request = (await db.query<{ id: string; version: number }>('select id,version from public.requests where customer_id=$1', [customer.id])).rows[0];
+    const apt = crypto.randomUUID();
+    await execute(workshop, { type: 'appointment', id: apt, request_id: request.id, request_version: request.version, resource_id: resource, starts_at: '2031-04-02T09:00:00Z', duration_minutes: 30, notes: '' });
+    const appointment = (await db.query<{ version: number }>('select version from public.appointments where id=$1', [apt])).rows[0];
+    await execute(workshop, { type: 'appointment_status', id: apt, version: appointment.version, request_version: request.version + 1, status: 'cancelled' });
+    const detail = await snapshotDetail('customer_detail', customer.id);
+    expect(detail.customers.map(c => c.id)).toEqual([customer.id]);
+    expect(detail.vehicles.map(v => v.id).sort()).toEqual([...(await db.query<{ id: string }>('select id from public.vehicles where customer_id=$1', [customer.id])).rows.map(v => v.id)].sort());
+    expect(detail.vehicles.length).toBe(2); // el coche original y el que no tiene ninguna solicitud
+    expect(detail.requests.map(r => r.id)).toEqual([request.id]);
+    expect(detail.appointments.map(a => a.id)).toEqual([apt]);
+    expect(detail.appointments[0].status).toBe('cancelled'); // el historial conserva citas no activas
+    await db.exec('reset role');
+    const foreignCustomer = (await db.query<{ id: string }>('select id from public.customers where workshop_id=$1 limit 1', [workshopB])).rows[0];
+    await asUser(owner);
+    expect((await snapshotDetail('customer_detail', foreignCustomer.id)).customers).toHaveLength(0); // un entity_id de otro taller no filtra nada, aunque p_workshop_id sea el propio y legítimo
+  });
+  it('ficha de vehículo: muestra a su propietario incluso sin ninguna solicitud, y exige un id de entidad', async () => {
+    await asUser(owner);
+    await execute(workshop, intake('622555002', '4000AAC'));
+    const customer = (await db.query<{ id: string }>('select id from public.customers where phone_e164=$1', ['+34622555002'])).rows[0];
+    const vehiculoNuevo = { id: crypto.randomUUID(), workshop_id: workshop, customer_id: customer.id, brand: 'Kia', model: 'Sportage', plate: '4000AAD' };
+    await execute(workshop, { type: 'vehicle', vehicle: vehiculoNuevo });
+    const detail = await snapshotDetail('vehicle_detail', vehiculoNuevo.id);
+    expect(detail.vehicles.map(v => v.id)).toEqual([vehiculoNuevo.id]);
+    expect(detail.customers.map(c => c.id)).toEqual([customer.id]); // propietario visible aunque el vehículo no tenga ninguna solicitud
+    expect(detail.requests).toHaveLength(0);
+    await expect(db.query("select public.workspace_snapshot($1,'vehicle_detail',0,'','all',null,null,null)", [workshop])).rejects.toThrow('no es válida'); // sin p_entity_id, la vista exige uno
+  });
+});
 describe('Recepción pública: anon crea solicitudes por slug, sin acceso a nada más', () => {
   let slugA: string;
   beforeAll(async () => {

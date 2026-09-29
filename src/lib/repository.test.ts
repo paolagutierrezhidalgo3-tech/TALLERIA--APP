@@ -20,7 +20,7 @@ describe('Repositorios y carga acotada',()=>{
   const metrics=await repo.peekMetrics();
   expect(metrics).toEqual({new_requests:2,upcoming:0,pending_customers:0,completed:0});
   expect(rpc).toHaveBeenCalledTimes(1);
-  expect(rpc.mock.calls[0]).toEqual(['workspace_snapshot',{p_workshop_id:'workshop',p_view:'settings',p_offset:0,p_search:'',p_status:'all',p_range_start:null,p_range_end:null}]);
+  expect(rpc.mock.calls[0]).toEqual(['workspace_snapshot',{p_workshop_id:'workshop',p_view:'settings',p_offset:0,p_search:'',p_status:'all',p_range_start:null,p_range_end:null,p_entity_id:null}]);
   rpc.mockClear();
   rpc.mockResolvedValue({data:{},error:null});
   await repo.execute({type:'status',id:'r',status:'pendiente'}); // una mutación normal, mientras el usuario sigue en Clientes
@@ -35,5 +35,31 @@ describe('Repositorios y carga acotada',()=>{
   expect(metrics).toEqual(first.metrics);
   const afterMutation=await repo.execute({type:'customer',customer:{...first.customers[0],notes:'Tras el poll'}});
   expect(afterMutation.page_info?.view).toBe('customers'); // sigue recargando Clientes, no 'settings'
+ });
+ it('SupabaseRepository.peek reenvía p_entity_id y NUNCA cambia la vista que execute() recarga después (abrir la ficha de un cliente no puede robarle la página al usuario)',async()=>{
+  rpc.mockResolvedValue({data:{customers:[{id:'c1',name:'Ana'}]},error:null});
+  const repo=new SupabaseRepository('workshop');
+  await repo.load({view:'customers',offset:25,search:'Prueba',status:'all'}); // el usuario está en Clientes, con una búsqueda activa
+  rpc.mockClear();
+  const detail=await repo.peek({view:'customer_detail',offset:0,search:'',status:'all',entity_id:'c1'});
+  expect(detail.customers[0]).toMatchObject({id:'c1'});
+  expect(rpc).toHaveBeenCalledTimes(1);
+  expect(rpc.mock.calls[0]).toEqual(['workspace_snapshot',{p_workshop_id:'workshop',p_view:'customer_detail',p_offset:0,p_search:'',p_status:'all',p_range_start:null,p_range_end:null,p_entity_id:'c1'}]);
+  rpc.mockClear();
+  rpc.mockResolvedValue({data:{},error:null});
+  await repo.execute({type:'status',id:'r',status:'pendiente'}); // una mutación normal, mientras el usuario sigue en Clientes
+  expect(rpc.mock.calls[1][1]).toMatchObject({p_view:'customers',p_offset:25,p_search:'Prueba'}); // sigue recargando Clientes, no la ficha
+ });
+ it('DemoRepository.peek devuelve el historial de un cliente/vehículo sin cambiar la vista que execute() recarga después',async()=>{
+  const data=new Map<string,string>();
+  vi.stubGlobal('localStorage',{getItem:(k:string)=>data.get(k)??null,setItem:(k:string,v:string)=>data.set(k,v)});
+  const repo=new DemoRepository();
+  const first=await repo.load({view:'customers',offset:0,search:'',status:'all'}); // el usuario está en Clientes
+  const customerId=first.customers[0].id;
+  const detail=await repo.peek({view:'customer_detail',offset:0,search:'',status:'all',entity_id:customerId});
+  expect(detail.customers.map(c=>c.id)).toEqual([customerId]);
+  expect(detail.page_info?.view).toBe('customer_detail');
+  const afterMutation=await repo.execute({type:'customer',customer:{...first.customers[0],notes:'Tras abrir la ficha'}});
+  expect(afterMutation.page_info?.view).toBe('customers'); // sigue recargando Clientes, no la ficha
  });
 });

@@ -61,4 +61,50 @@ describe('Reglas de la segunda iteración en demo',()=>{
   expect(projectState(s,{...q,search:'bruno',status:'completed'}).appointments.map(a=>a.id)).toEqual([aptBruno]); // búsqueda + estado combinados
   expect(projectState(s,{...q,search:'ana',status:'completed'}).appointments).toHaveLength(0); // el nombre coincide pero el estado no
  });
+ it('ficha de cliente: reúne todos sus vehículos (incluso sin ninguna solicitud) y todas sus citas (cualquier estado), sin mezclar a otro cliente',()=>{
+  let s=applyCommand(base(),{type:'intake',id:crypto.randomUUID(),data:{name:'Ana García',phone:'600222333',brand:'SEAT',model:'Ibiza',plate:'1111AAA',reason:'Revisión anual',availability:'Mañanas',notes:''},messages:[{role:'user',content:'Revisión'}]},now);
+  s=applyCommand(s,{type:'intake',id:crypto.randomUUID(),data:{name:'Bruno Ruiz',phone:'600444555',brand:'OPEL',model:'Astra',plate:'2222BBB',reason:'Cambio de frenos',availability:'Tardes',notes:''},messages:[{role:'user',content:'Frenos'}]},now); // dos clientes distintos
+  const ana=s.customers.find(c=>c.name==='Ana García')!, otro=s.customers.find(c=>c.name==='Bruno Ruiz')!;
+  const segundoVehiculo={id:crypto.randomUUID(),workshop_id:s.workshop.id,customer_id:ana.id,brand:'Renault',model:'Clio',plate:'9999XYZ'};
+  s=applyCommand(s,{type:'vehicle',vehicle:segundoVehiculo},now); // un segundo coche de Ana, sin ninguna solicitud todavía
+  const resource=s.resources![0].id;
+  const anaReq=s.requests.find(r=>r.customer_id===ana.id)!;
+  const apt=crypto.randomUUID();
+  s=applyCommand(s,{type:'appointment',id:apt,request_id:anaReq.id,request_version:anaReq.version,resource_id:resource,starts_at:'2030-01-02T09:00:00Z',duration_minutes:30,notes:''},now);
+  s=applyCommand(s,{type:'appointment_status',id:apt,status:'cancelled',version:s.appointments.find(a=>a.id===apt)!.version,request_version:s.requests.find(r=>r.id===anaReq.id)!.version},now);
+  const detail=projectState(s,{view:'customer_detail',offset:0,search:'',status:'all',entity_id:ana.id});
+  expect(detail.customers.map(c=>c.id)).toEqual([ana.id]); // no arrastra al otro cliente
+  expect(detail.vehicles.map(v=>v.id).sort()).toEqual([s.vehicles.find(v=>v.customer_id===ana.id&&v.id!==segundoVehiculo.id)!.id,segundoVehiculo.id].sort()); // ambos coches, incluido el que no tiene ninguna solicitud
+  expect(detail.requests.map(r=>r.id)).toEqual([anaReq.id]); // solo las solicitudes de Ana, no las del otro cliente
+  expect(detail.appointments.map(a=>a.id)).toEqual([apt]); // la cita cancelada sigue apareciendo en el historial
+  expect(detail.appointments[0].status).toBe('cancelled');
+  expect(projectState(s,{view:'customer_detail',offset:0,search:'',status:'all',entity_id:otro.id}).requests.map(r=>r.id)).not.toContain(anaReq.id); // aislamiento entre clientes del mismo taller
+  const inexistente=projectState(s,{view:'customer_detail',offset:0,search:'',status:'all',entity_id:crypto.randomUUID()});
+  expect(inexistente.customers).toHaveLength(0);
+  expect(inexistente.customer_counts).toEqual({}); // sin entrada fantasma para un id que no corresponde a ningún cliente real
+ });
+ it('ficha de vehículo: muestra a su propietario incluso sin ninguna solicitud, y su historial cuando la hay',()=>{
+  let s=receive(base());
+  const customer=s.customers[0];
+  const vehiculoNuevo={id:crypto.randomUUID(),workshop_id:s.workshop.id,customer_id:customer.id,brand:'Kia',model:'Sportage',plate:'5555KIA'};
+  s=applyCommand(s,{type:'vehicle',vehicle:vehiculoNuevo},now);
+  const sinHistorial=projectState(s,{view:'vehicle_detail',offset:0,search:'',status:'all',entity_id:vehiculoNuevo.id});
+  expect(sinHistorial.vehicles.map(v=>v.id)).toEqual([vehiculoNuevo.id]);
+  expect(sinHistorial.customers.map(c=>c.id)).toEqual([customer.id]); // propietario visible aunque el vehículo no tenga ninguna solicitud
+  expect(sinHistorial.requests).toHaveLength(0);
+  const original=s.vehicles.find(v=>v.id!==vehiculoNuevo.id)!;
+  const req=s.requests[0];
+  const conHistorial=projectState(s,{view:'vehicle_detail',offset:0,search:'',status:'all',entity_id:original.id});
+  expect(conHistorial.requests.map(r=>r.id)).toEqual([req.id]);
+  expect(conHistorial.customers.map(c=>c.id)).toEqual([customer.id]);
+ });
+ it('ficha de cliente: nunca devuelve más de 200 solicitudes, y el total refleja el recuento real, no el ya recortado',()=>{
+  const s=base();
+  const customerId=crypto.randomUUID();
+  s.customers.push({id:customerId,workshop_id:s.workshop.id,name:'Cliente prolífico',phone:'+34600000000',phone_e164:'+34600000000',notes:'',version:1});
+  s.requests=Array.from({length:201},(_,i)=>({id:crypto.randomUUID(),workshop_id:s.workshop.id,customer_id:customerId,vehicle_id:crypto.randomUUID(),conversation_id:crypto.randomUUID(),reason:'Revisión '+i,availability:'Mañanas',notes:'',status:'completada' as const,created_at:new Date(2020,0,1+i).toISOString(),version:1}));
+  const detail=projectState(s,{view:'customer_detail',offset:0,search:'',status:'all',entity_id:customerId});
+  expect(detail.requests).toHaveLength(200); // acotado, igual que el límite del lado SQL
+  expect(detail.page_info?.total).toBe(201); // el total refleja las 201 reales, no las 200 devueltas
+ });
 });

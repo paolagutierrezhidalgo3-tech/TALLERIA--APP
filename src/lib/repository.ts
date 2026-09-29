@@ -13,6 +13,11 @@ export interface WorkshopRepository {
   // regardless of which page the user is on, and must not silently swap
   // that page's remembered query out from under it.
   peekMetrics(): Promise<State['metrics']>;
+  // A one-off read for a view that shouldn't become "the current page" --
+  // used to open a customer/vehicle history on top of whatever list is
+  // already loaded. Same reasoning as peekMetrics(): must never touch the
+  // query execute() reuses to reload after a mutation.
+  peek(query: ViewQuery): Promise<State>;
 }
 export const KEY = 'talleria.demo.v2';
 export const LEGACY = 'talleria.demo.v1';
@@ -41,6 +46,9 @@ export class DemoRepository implements WorkshopRepository {
   }
   async peekMetrics(): Promise<State['metrics']> {
     return projectState(this.read(), { view: 'settings', offset: 0, search: '', status: 'all' }).metrics;
+  }
+  async peek(query: ViewQuery): Promise<State> {
+    return projectState(this.read(), query);
   }
   async execute(command: Command): Promise<State> {
     const save = async () => {

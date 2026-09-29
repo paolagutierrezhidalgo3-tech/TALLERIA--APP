@@ -30,6 +30,48 @@ describe('workspace.tsx: menú lateral móvil', () => {
   });
 });
 
+describe('workspace.tsx: ficha de cliente/vehículo', () => {
+  // Codex found that a workshop/session change left a previously-open ficha
+  // (and its already-fetched data) sitting in state, so it could reappear
+  // over a DIFFERENT workshop after switching accounts in the same tab --
+  // these pin the fix (closing it everywhere the session/workshop actually
+  // changes) at the source level, since there's no component test harness.
+  it('load() cierra cualquier ficha abierta al arrancar una sesión/taller nuevo (evita que sobreviva a un cambio de cuenta)', () => {
+    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository)');
+    const end = source.indexOf('}, [reads]);');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(source.slice(start, end)).toMatch(/setEntityDetail\(null\)/);
+  });
+  it('logout() y la resolución de sesión sin usuario cierran cualquier ficha abierta', () => {
+    const logoutStart = source.indexOf('async function logout()');
+    const logoutEnd = source.indexOf('catch (err) { setError', logoutStart);
+    expect(logoutStart).toBeGreaterThan(-1);
+    expect(source.slice(logoutStart, logoutEnd)).toMatch(/setEntityDetail\(null\)/);
+    const sessionStart = source.indexOf('async function session()');
+    const sessionEnd = source.indexOf("setScreen('auth');", sessionStart);
+    expect(sessionStart).toBeGreaterThan(-1);
+    expect(source.slice(sessionStart, sessionEnd)).toMatch(/setEntityDetail\(null\)/);
+  });
+  it('cerrar la ficha invalida cualquier petición pendiente de la anterior (el contador se incrementa incluso al cerrar, no solo al abrir)', () => {
+    const start = source.indexOf('const entityDetailSeq = useRef(0);');
+    const end = source.indexOf('}, [entityDetail]);');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
+    const seqIndex = block.indexOf('++entityDetailSeq.current');
+    const guardIndex = block.indexOf('if (!entityDetail || !repository.current)');
+    expect(seqIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeGreaterThan(seqIndex); // el contador sube ANTES del return anticipado al cerrar, no después
+  });
+  it('la ficha es de solo lectura: AppointmentCard se renderiza con actionable={false} dentro del modal de historial', () => {
+    const start = source.indexOf('{entityDetail && <Modal');
+    const end = source.indexOf('{cancelId && <Modal', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(source.slice(start, end)).toMatch(/actionable=\{false\}/);
+  });
+});
 describe('workspace.tsx: aviso de solicitudes nuevas', () => {
   // The actual freshness logic (two counters, six call sites racing each
   // other) has real behavioral coverage in src/lib/read-coordinator.test.ts,
