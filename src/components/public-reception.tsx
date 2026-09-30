@@ -70,7 +70,7 @@ export function PublicReceptionPage({ slug, workshop: initialWorkshop }: { slug:
         <p>Responde unas preguntas rápidas y el taller revisará tu consulta antes de confirmar una cita.</p>
         {workshop && (workshop.address || workshop.hours) && <div className="auth-benefits">{workshop.address && <p><MapPin size={18}/>{workshop.address}</p>}{workshop.hours && <p><Clock size={18}/>{workshop.hours}</p>}</div>}
       </div>
-      <small>Recepción digital de {workshop?.name ?? 'este taller'}.</small>
+      <div className="reception-footer"><small>Recepción digital de {workshop?.name ?? 'este taller'}.</small><a className="text-button" href={'/r/' + slug + '/aviso-legal'} target="_blank" rel="noopener noreferrer">Aviso legal y privacidad</a></div>
     </section>
     <section className="auth-form">
       {workshop ? <Wizard onSubmit={onSubmit} slug={slug}/> : <div className="card settings-card"><h2>No encontramos este taller.</h2><p className="muted">Comprueba el enlace que te compartieron.</p></div>}
