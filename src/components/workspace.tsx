@@ -71,6 +71,47 @@ export function Workspace() {
   // checkForNewRequests -- so the comparison stays correct across
   // navigation too, not just across polls.
   const knownNewRequestsRef = useRef<number | null>(null);
+  // The workshop id load() last actually applied. Distinguishes "this
+  // load() is for the same workshop the user was already looking at" (a
+  // Supabase auth token refresh silently re-running session() while the
+  // tab regains focus -- confirmed via real network requests during manual
+  // testing: it races the poll's own visibilitychange check for the exact
+  // same event, and being an ordinary read too, whichever one the
+  // ReadCoordinator judges freshest is applied) from "this is a genuinely
+  // new workshop/session" (first login, switching workshops, accepting an
+  // invitation, a demo reset). Only the first case should behave like any
+  // other ordinary read and notify on a real increase; the second must stay
+  // silent, or opening a different workshop could misreport its own past
+  // history as "new". A real logout (or the "sin sesión" resolution of
+  // session()) resets this to null so a later re-login to the very same
+  // workshop is also treated as a genuinely new session -- otherwise a
+  // request that arrived while logged out would be wrongly announced as new
+  // on the first load after logging back in.
+  const lastWorkshopIdRef = useRef<string | null>(null);
+  // Bumped by every real end of session (logout, the "sin sesión" resolution
+  // of session(), or signing out from the password-recovery screen) -- NOT
+  // by load() itself, which only starts a session. A load() already in
+  // flight when a real end-of-session happens (e.g. logout clicked while a
+  // token-refresh-triggered load() is still awaiting its response) captures
+  // this value before its await and must discard its own result if it no
+  // longer matches once it resolves: otherwise that stale load() could both
+  // resurrect lastWorkshopIdRef (undoing the reset above) and flip the
+  // screen back to 'app' after the user already logged out. Plain
+  // read-freshness (ReadCoordinator) doesn't catch this, because ending a
+  // session is neither a read nor a mutation to it.
+  const sessionEpochRef = useRef(0);
+  function endSession() { lastWorkshopIdRef.current = null; sessionEpochRef.current += 1; }
+  // Orders session()/load() auth resolutions by recency ONLY against each
+  // other -- deliberately its own counter, separate from the ReadCoordinator
+  // (`reads`) used below for metrics freshness. Sharing `reads` was tried
+  // and found unsafe: an unrelated background poll claiming a read could
+  // silently swallow a same-tab SIGNED_OUT resolution (the poll's claim made
+  // session()'s own claim look stale even though nothing about session()
+  // itself was actually superseded), and a concurrent mutation's
+  // beginMutation()/endMutation() could permanently poison an in-flight
+  // session() claim with no further read ever needed to un-stick it. Auth
+  // transitions must never depend on unrelated poll/mutation activity.
+  const authGenerationRef = useRef(0);
   const find: FindOptions = useCallback((kind, text) => repository.current?.lookup(kind, text) ?? Promise.resolve([]), []);
   const mutation = useRef(false);
   const recovering = useRef(false);
@@ -180,6 +221,12 @@ export function Workspace() {
     // left open belongs to whatever workshop was loaded before -- closing
     // it here is what stops it from reappearing over a different one.
     const claim = reads.claimRead();
+    const epochAtStart = sessionEpochRef.current;
+    // Own claim for ordering against other session()/load() calls (see
+    // authGenerationRef above) -- independent of `claim` above, which is
+    // only about metrics freshness against the poll/refresh/navigation/demo
+    // sync.
+    const authGeneration = ++authGenerationRef.current;
     setEntityDetail(null);
     try {
       setPage('dashboard'); setOffset(0); setSearch(''); setFilter('all'); queryKey.current = JSON.stringify(defaultQuery);
@@ -187,16 +234,44 @@ export function Workspace() {
       // A password-recovery event may have taken over the screen while this
       // was in flight; never let a stale load overwrite it.
       if (recovering.current) return;
+      // A real end of session (logout, token expiry, signing out from
+      // password recovery) happened while this was in flight -- discard it
+      // entirely rather than resurrecting lastWorkshopIdRef or flipping the
+      // screen back to 'app' after the user is already logged out.
+      if (sessionEpochRef.current !== epochAtStart) return;
       const fresh = reads.isFresh(claim);
-      // Baseline for this (possibly new) workshop/session -- silent, no
-      // notice: whatever new_requests already was before this tab opened is
-      // not "new" by definition. Only set when still fresh; otherwise a
-      // faster concurrent read already established the real baseline.
-      if (fresh) knownNewRequestsRef.current = next.metrics?.new_requests ?? null;
+      if (fresh) {
+        // Same workshop as the last load() actually applied -> an ordinary
+        // notifying read, exactly like the poll/refresh/navigation. A
+        // genuinely new workshop/session -> silent baseline reset, no
+        // notice: whatever new_requests already was before this tab opened
+        // is not "new" by definition. checkForNewRequests() itself
+        // always updates knownNewRequestsRef regardless of notify, so the
+        // baseline is correct either way.
+        checkForNewRequests(next.metrics, lastWorkshopIdRef.current === next.workshop.id);
+        lastWorkshopIdRef.current = next.workshop.id;
+      }
       setState(prev => (fresh || !prev ? next : { ...next, metrics: prev.metrics }));
       setScreen('app'); setError('');
     } catch (err) {
       if (recovering.current) return;
+      // Same reasoning as the success path above: a real end of session that
+      // happened while this was in flight must not flip a NEWER, already
+      // logged-in session's screen back to 'auth' just because this stale
+      // request finally rejected.
+      if (sessionEpochRef.current !== epochAtStart) return;
+      // The epoch check alone only catches a real end of session; it says
+      // nothing about two ordinary load()s racing each other within the SAME
+      // epoch (e.g. a TOKEN_REFRESHED and a SIGNED_IN event both resolving to
+      // the same still-logged-in workshop). authGenerationRef is the
+      // dedicated counter for exactly that ordering -- deliberately not the
+      // metrics-freshness coordinator (`reads`, used by `claim` above for
+      // the success path): that one is shared with the background poll and
+      // with mutations, and an unrelated poll claiming a read (or a
+      // mutation running) while this was in flight must never be able to
+      // swallow a load() failure that is otherwise still the most recent
+      // session()/load() call.
+      if (authGenerationRef.current !== authGeneration) return;
       setError(err instanceof Error ? err.message : 'No se han podido cargar los datos.'); setScreen('auth');
     }
   }, [reads]);
@@ -218,6 +293,27 @@ export function Workspace() {
     if (!isSupabaseMode) return;
     let alive = true;
     async function session() {
+      // Every auth event (SIGNED_IN/SIGNED_OUT/TOKEN_REFRESHED/...) re-runs
+      // this function without cancelling a previous call still in flight --
+      // capture the epoch before the awaits below so a resolution that was
+      // already stale by the time it lands (e.g. it belongs to the user who
+      // was just logged out, or who logged out and back in as someone else
+      // while this was still resolving) can be told apart from the current
+      // one, same idea as load()'s own epochAtStart.
+      const epochAtStart = sessionEpochRef.current;
+      // The epoch alone only catches a real end of session; it does nothing
+      // for two session() calls racing each other WITHIN the same epoch
+      // (e.g. a TOKEN_REFRESHED and a SIGNED_IN event for the same still
+      // logged-in user, resolving in either order). authGenerationRef is the
+      // dedicated counter for that ordering -- deliberately not the
+      // metrics-freshness coordinator (`reads`) load() uses for its own
+      // claim: that one is shared with the background poll and with
+      // mutations, and this function can run while polling is already
+      // active (a SIGNED_OUT event while the tab is showing 'app'), so tying
+      // its validity to unrelated poll/mutation activity could silently
+      // swallow a real logout resolution or get permanently stuck behind an
+      // unrelated mutation.
+      const authGeneration = ++authGenerationRef.current;
       // getSupabase() is called lazily inside each dep, not hoisted out here:
       // it throws synchronously when the app is misconfigured (missing/invalid
       // URL or key), and only calls made through resolveSession's own
@@ -235,11 +331,31 @@ export function Workspace() {
       // absolute priority: never let this already-in-flight call overwrite
       // it with the dashboard, invitation or onboarding screen.
       if (!alive || recovering.current) return;
+      // A real end of session already landed (from a NEWER session() call's
+      // own resolution, or from logout()/password-recovery signOut()) while
+      // this one was still resolving -- discard this resolution entirely,
+      // whichever branch it would have taken, rather than letting a stale
+      // logout/error/workshop overwrite the session that is now actually
+      // current.
+      if (sessionEpochRef.current !== epochAtStart) return;
+      // A different session() call (or load(), which claims its own
+      // authGeneration too) already started and is now the freshest --
+      // discard this one regardless of which resolved first, so a slower
+      // stale resolution (even one ending in 'auth') can never override a
+      // faster, newer one that already applied successfully.
+      if (authGenerationRef.current !== authGeneration) return;
       if (resolution.screen === 'app') { await load(new SupabaseRepository(resolution.workshopId)); return; }
       if (resolution.screen === 'invitation') { setPendingInvitation(resolution.pending); setScreen('invitation'); return; }
       if (resolution.screen === 'onboarding') { setScreen('onboarding'); return; }
       setState(null);
       setEntityDetail(null);
+      // A real end of session (as opposed to Supabase silently re-validating
+      // an existing one) must break "same workshop" continuity: otherwise
+      // logging back into the SAME workshop after being logged out -- during
+      // which a real request could have arrived -- would be treated as a
+      // continuation of the old session and wrongly notify about history
+      // that isn't actually new to this session.
+      endSession();
       if (resolution.error) setError(resolution.error);
       setScreen('auth');
     }
@@ -424,13 +540,20 @@ export function Workspace() {
       const { error: updateError } = await getSupabase().auth.updateUser({ password });
       if (updateError) throw updateError;
       await getSupabase().auth.signOut();
+      // This signOut() bypasses both logout() and session()'s own reset:
+      // recovering.current is still true here, so the SIGNED_OUT auth event
+      // this triggers returns early from session() without reaching its
+      // "sin sesión" branch. Whatever workshop this tab had open before
+      // starting a password reset must not be treated as continuing once
+      // the user is back at the login screen.
+      endSession();
       setPasswordUpdated(true);
     } catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido actualizar la contraseña.'); }
     finally { setBusy(false); }
   }
   function backToLogin() { recovering.current = false; setPasswordUpdated(false); setError(''); setScreen('auth'); }
   async function logout() {
-    try { if (isSupabaseMode) { const { error } = await getSupabase().auth.signOut(); if (error) throw error; } repository.current = null; setState(null); setPage('dashboard'); setSelected(null); setConversation(null); setEditor(null); setEntityDetail(null); setScreen('auth'); }
+    try { if (isSupabaseMode) { const { error } = await getSupabase().auth.signOut(); if (error) throw error; } repository.current = null; setState(null); setPage('dashboard'); setSelected(null); setConversation(null); setEditor(null); setEntityDetail(null); endSession(); setScreen('auth'); }
     catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido cerrar la sesión.'); }
   }
   function navigate(next: Page) { setOffset(0); setFilter('all'); setPage(next); setSearch(''); setSelected(null); setConversation(null); setMobile(false); setError(''); setCalendarResourceFilter('all'); setCalendarStatusFilter('all'); }
