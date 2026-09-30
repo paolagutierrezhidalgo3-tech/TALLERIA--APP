@@ -1052,3 +1052,29 @@ Bloqueos o limitaciones: ninguno bloqueante. Sigue vigente la limitación ya reg
 Próximo paso exacto: continuar la revisión manual completa en producción -- pendiente el pulido visual/UX en móvil del calendario (bloque G) y, cuando el usuario lo priorice, la prueba real de cambio de sesión owner/staff con cuentas reales contra Supabase (bloque H)
 Actualización de este plan versionada: sí, en el mismo commit que este cierre
 ```
+
+```text
+Fecha: 30 de septiembre de 2026
+Rama y HEAD comprobados: main, HEAD 2eccf4f (checkpoint de G/I/J en producción) al empezar esta sesión; sin cambios de código
+Bloque actual y alcance: último pendiente de la revisión manual completa en producción (sección 7, punto 17) -- probar el fix de `authGenerationRef` (bloque H, commit `5e213fb`) con un cambio de sesión real owner/staff contra Supabase real, no solo en modo demo
+Estado: cerrado -- sin hallazgos
+Hecho en esta sesión: dado que entrar contraseñas reales de producción no es algo que Claude pueda hacer, el usuario iniciaba/cerraba sesión de su lado en la misma pestaña ya bajo control de Claude in Chrome, y Claude verificaba el resultado después de cada cambio. (1) Con el usuario ya logueado como owner (`gutierrezhidalgopaola@gmail.com`), se localizó en "Equipo" una cuenta staff real del mismo taller (`paolagutierrezhidalgo3@gmail.com`, alta 21 sept). (2) Cerrada la sesión de owner desde el menú; el usuario inició sesión como staff en la misma pestaña. (3) Verificado tras la carga: mismo taller ("Taller Prueba Paola"), mismas métricas (01/00/01/01) sin corrupción ni parpadeo a la pantalla de login, y el menú lateral correctamente sin "Equipo"/"Configuración" (permisos de staff). (4) Repetido en sentido inverso: cerrada la sesión de staff, el usuario volvió a entrar como owner en la misma pestaña; verificado que "Equipo"/"Configuración" reaparecen y las métricas siguen intactas. (5) Consola del navegador revisada tras el segundo cambio: sin mensajes de error
+Decisiones confirmadas: ninguna decisión de producto nueva; verificación de un fix ya cerrado (bloque H), ahora también contra Supabase real y no solo en modo demo owner↔staff como en su cierre original del 28 de septiembre
+Archivos principales: ninguno (solo `TALLERIA_PLAN_MAESTRO_FINAL.md`, este cierre). Ningún archivo de código tocado ni dato de Supabase modificado
+Pendientes concretos y hallazgos menores: ninguno. Con este cierre, los tres puntos que quedaban explícitamente pendientes de la revisión manual completa en producción (G, I, J con datos reales -- sesión anterior -- y H con cuentas reales -- esta sesión) están cubiertos. Sigue pendiente, sin bloquear nada, la revisión visual/responsive real del calendario en móvil (intento fallido con `resize_window` en la sesión anterior)
+Migraciones preparadas (identificador y finalidad): ninguna
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no aplica -- no hubo ninguna escritura de datos, solo inicios/cierres de sesión reales ya de por sí parte del uso normal de la app
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna en esta sesión; 001-014 siguen como estaban
+Tests: no aplica (sin cambios de código)
+Typecheck: no aplica
+Lint: no aplica
+Build: no aplica
+Pruebas manuales: sí -- ver "Hecho en esta sesión" arriba; primera verificación real (no demo) del fix de cambio de sesión/taller del bloque H
+Revisión de Codex: no aplica
+Commit de cierre confirmado: pendiente -- este mismo checkpoint se commitea junto con este cierre
+Push: pendiente, en el mismo commit
+Despliegue: no aplica; sin cambios de código
+Bloqueos o limitaciones: ninguno
+Próximo paso exacto: la revisión manual completa en producción queda funcionalmente cerrada (G, H, I, J verificados contra Supabase real). Queda como pendiente menor, no bloqueante: revisión visual/responsive del calendario en móvil, para una próxima sesión
+Actualización de este plan versionada: sí, en el mismo commit que este cierre
+```
