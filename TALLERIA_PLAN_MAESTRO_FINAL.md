@@ -1078,3 +1078,29 @@ Bloqueos o limitaciones: ninguno
 Próximo paso exacto: la revisión manual completa en producción queda funcionalmente cerrada (G, H, I, J verificados contra Supabase real). Queda como pendiente menor, no bloqueante: revisión visual/responsive del calendario en móvil, para una próxima sesión
 Actualización de este plan versionada: sí, en el mismo commit que este cierre
 ```
+
+```text
+Fecha: 30 de septiembre de 2026
+Rama y HEAD comprobados: main, HEAD 81cc179 (checkpoint del cambio de sesión owner/staff real) al empezar esta sesión
+Bloque actual y alcance: cierre del último pendiente de la revisión manual completa en producción -- revisión visual/responsive del calendario en móvil (bloque G), resuelto esta vez con emulación real de dispositivo (en vez de `resize_window`, que en la sesión anterior no surtía efecto porque solo redimensiona la ventana real de Chrome, no el viewport que ve la extensión)
+Estado: cerrado -- un hallazgo real encontrado y corregido
+Hecho en esta sesión: (1) Como `resize_window` seguía sin reflejarse en las capturas (confirmado por lectura de `window.innerWidth` tras la llamada: seguía en 1280), se simuló un viewport móvil real inyectando un `<iframe>` de 390px de ancho apuntando a la misma URL de producción dentro de la propia pestaña ya autenticada (mismo origen, así que hereda la sesión) -- esto sí dispara los media queries reales de CSS/JS, a diferencia de solo reducir el zoom o el ancho de un contenedor. (2) Revisado dentro del iframe: menú hamburguesa y drawer de navegación, vista Semana (columnas con scroll horizontal, "+ Nueva cita" visible sin cortes), vista Día (cuadrícula horaria legible en toda su altura), el modal "Crear cita" completo (todos los campos apilados a ancho completo, sin desbordes, clic-para-crear prefilla fecha/hora igual que en escritorio -- cerrado sin guardar para no crear datos de prueba), la vista Lista con buscador/filtro de estado apilados, y confirmado por lectura de `scrollWidth`/`clientWidth` que no hay scroll horizontal indebido a nivel de página. Los botones de acción de una cita (Reprogramar/Completar/Cancelar) se confirmaron a prueba de desbordamiento por lectura directa del CSS (`.appointment-actions{...flex-wrap:wrap}`), sin necesidad de crear una cita "Programada" para verlo en vivo. (3) Hallazgo real: el título de la vista Día mostraba "Miércoles, 30 De Septiembre" -- la preposición "de" aparecía capitalizada porque `.calendar-range-label` en `globals.css` aplicaba `text-transform:capitalize` (que capitaliza cada palabra) sobre una cadena que `Intl.DateTimeFormat('es-ES', {weekday:'long', day:'numeric', month:'long'})` ya devuelve correctamente en minúsculas ("miércoles, 30 de septiembre", verificado con Node). Presente también en escritorio, no era una regresión de responsive. (4) Corregido a petición explícita del usuario ("Corrige la capitalización, es rápido"): quitado `text-transform:capitalize` de `.calendar-range-label`, y capitalizada solo la primera letra en JS (`src/components/calendar.tsx`, `rangeLabel`) sobre el resultado ya formateado por `Intl`, aplicable a ambos modos (día y semana) sin afectar el resto de la cadena
+Decisiones confirmadas: usar un `<iframe>` mismo-origen como sustituto de la emulación de dispositivo real cuando `resize_window` no funciona en este entorno de automatización -- útil como técnica general para futuras revisiones responsive en esta sesión de Claude Code
+Archivos principales: `src/components/calendar.tsx` (cálculo de `rangeLabel`), `src/app/globals.css` (`.calendar-range-label`), `TALLERIA_PLAN_MAESTRO_FINAL.md`
+Pendientes concretos y hallazgos menores: ninguno. Con este cierre, la revisión manual completa en producción (sección 7, punto 17) queda cerrada de extremo a extremo: G, H, I, J verificados contra Supabase real, con un único hallazgo visual (menor, ya corregido)
+Migraciones preparadas (identificador y finalidad): ninguna
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no aplica -- cambio de código puro, sin escritura de datos ni cambios de Supabase
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna en esta sesión; 001-014 siguen como estaban
+Tests: `pnpm run test` -- 226/226 correctos (sin tests nuevos; el cambio no tiene lógica de negocio propia que fijar, solo presentación de una cadena ya cubierta indirectamente por los tests existentes del calendario)
+Typecheck: `pnpm run typecheck` -- sin errores
+Lint: `pnpm run lint` -- sin errores
+Build: `pnpm run build` -- correcto
+Pruebas manuales: sí -- ver "Hecho en esta sesión" arriba; primera revisión visual real (no solo desktop) del calendario en viewport móvil, contra producción real
+Revisión de Codex: no aplica (cambio trivial de una línea de presentación, sin lógica de negocio ni condición de carrera involucrada)
+Commit de cierre confirmado: sí -- `7d84a2e`, a petición explícita del usuario ("Corrige la capitalización, es rápido")
+Push: confirmado (`81cc179..7d84a2e` a origin/main)
+Despliegue: disparado por el push; CI/Vercel no verificado todavía en esta sesión (pendiente, no bloqueante)
+Bloqueos o limitaciones: ninguno
+Próximo paso exacto: la revisión manual completa en producción (sección 7, punto 17) queda cerrada. Próximo bloque a decidir por el usuario -- no hay ninguno en curso ni propuesto
+Actualización de este plan versionada: sí, en el mismo commit que este cierre
+```
