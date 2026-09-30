@@ -68,7 +68,7 @@ input.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overf
 .calendar-card{padding:20px}
 .calendar-toolbar{display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap;margin-bottom:18px}
 .calendar-nav{display:flex;align-items:center;gap:10px}
-.calendar-range-label{font-size:13px;text-transform:capitalize;color:#43405a;margin-left:4px}
+.calendar-range-label{font-size:13px;color:#43405a;margin-left:4px}
 
 /* Day grid: an explicit CSS Grid, positioned entirely from JS (gridColumn /
  * gridRow), so a cita's real duration decides its row-span instead of any

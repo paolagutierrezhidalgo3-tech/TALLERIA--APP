@@ -21,9 +21,13 @@ export function Calendar({ state, appointments, busy, execute, mode, onModeChang
   const tz = state.workshop.timezone;
   const todayISO = localDateParts(new Date(), tz).date;
   const { startISO, endISO } = rangeDatesForMode(anchor, mode);
-  const rangeLabel = mode === 'day'
+  const rawRangeLabel = mode === 'day'
     ? new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'long', timeZone: tz }).format(noon(anchor))
     : new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(noon(startISO)) + ' – ' + new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' }).format(noon(addDaysISO(endISO, -1)));
+  // Intl formats Spanish dates fully lowercase ("miércoles, 30 de septiembre");
+  // only the leading letter should be capitalized, not every word (which
+  // wrongly capitalized "de" too when done via CSS text-transform).
+  const rangeLabel = rawRangeLabel.charAt(0).toUpperCase() + rawRangeLabel.slice(1);
   return <section className="card calendar-card">
     <div className="calendar-toolbar">
       <div className="calendar-nav">
