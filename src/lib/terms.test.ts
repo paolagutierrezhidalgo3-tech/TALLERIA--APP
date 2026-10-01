@@ -14,7 +14,7 @@ describe('aceptación de los términos de servicio', () => {
   it('guarda la versión y el momento de la aceptación', () => {
     const now = new Date('2026-10-01T09:30:00Z');
     expect(termsAcceptanceMetadata(now)).toEqual({ terms_version: TERMS_VERSION, terms_accepted_at: '2026-10-01T09:30:00.000Z' });
-    expect(TERMS_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(TERMS_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}(\.\d+)?$/);
     expect(Object.keys(termsAcceptanceMetadata())).toEqual(['terms_version', 'terms_accepted_at']);
   });
 });
@@ -48,7 +48,8 @@ describe('página /terminos', () => {
     const text = prose('src/app/terminos/page.tsx');
     expect(text).toContain('encargado del tratamiento');
     expect(text).toContain('invitaciones que envíes');
-    expect(text).toContain('el texto de sus conversaciones y solicitudes puede conservarse');
+    expect(text).toContain('elimina sus datos personales del historial');
+    expect(text).toContain('no se detectan automáticamente');
     expect(text).not.toContain('para atender su derecho de supresión');
     for (const provider of ['Supabase', 'Vercel', 'Resend', 'Sentry']) expect(text).toContain(provider);
     expect(text).toContain('la aplicación todavía no permite hacerlo por tu cuenta');

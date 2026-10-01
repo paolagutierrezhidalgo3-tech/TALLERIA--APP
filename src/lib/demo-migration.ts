@@ -1,4 +1,5 @@
-import type { State, Resource } from './domain';
+import { ANONYMIZED_MARKER, type State, type Resource } from './domain';
+import { eraseCustomerPersonalData, isAnonymizedCustomer } from './erasure';
 import { tryNormalizePhone } from './phone';
 // Mirrors public.slugify + generate_workshop_slug: lowercase, strip
 // diacritics, collapse anything that isn't a-z0-9 into single hyphens, trim
@@ -54,7 +55,7 @@ function upgradeToV4(source: State): State {
   state.workshop.slug ??= localSlug(state.workshop.name) || 'taller';
   return state;
 }
-export function upgradeDemo(source: State): State {
+function upgradeToV5(source: State): State {
   if (source.schema_version === 5) return source;
   const state = structuredClone(upgradeToV4(source));
   state.schema_version = 5;
@@ -63,5 +64,16 @@ export function upgradeDemo(source: State): State {
   // the value the Configuración form last saw, so an uninitialized counter
   // would reject the very first schedule the owner tries to save.
   state.workshop.hours_version ??= 1;
+  return state;
+}
+export const DEMO_SCHEMA_VERSION = 6;
+export function upgradeDemo(source: State): State {
+  if (source.schema_version === DEMO_SCHEMA_VERSION) return source;
+  const state = structuredClone(upgradeToV5(source));
+  state.schema_version = DEMO_SCHEMA_VERSION;
+  // Same backfill as migration 015: customers anonymized before the history
+  // was scrubbed too still had their personal data in conversations and in
+  // request/appointment free text.
+  for (const c of state.customers) if (isAnonymizedCustomer(c, ANONYMIZED_MARKER)) eraseCustomerPersonalData(state, c.id);
   return state;
 }

@@ -78,10 +78,14 @@ export default function Page() {
           conexiones cifradas.
         </li>
         <li>
-          Ayudarte a atender los derechos de tus clientes. La aplicación permite anonimizar el nombre, el
-          teléfono y las observaciones de la ficha de un cliente y borrar las matrículas de sus vehículos,
-          pero el texto de sus conversaciones y solicitudes puede conservarse; si hace falta suprimirlo, el
-          operador te ayudará a hacerlo.
+          Ayudarte a atender los derechos de tus clientes. Para el derecho de supresión, la aplicación
+          permite anonimizar a un cliente: sustituye el nombre, el teléfono y las observaciones de su ficha,
+          borra las matrículas de sus vehículos y elimina sus datos personales del historial (todos los
+          mensajes de sus conversaciones de recepción, la disponibilidad y observaciones de sus solicitudes, y
+          las apariciones que se detecten de su nombre, teléfono y matrícula en los motivos, en las notas de
+          sus citas y en la marca y el modelo de sus vehículos), conservando el resto del historial del
+          taller. Otros datos personales escritos a mano en esos textos, o su nombre escrito de otra forma, no
+          se detectan automáticamente; si hace falta suprimirlos, el operador te ayudará a hacerlo.
         </li>
         <li>Informarte sin dilación indebida si se produce una brecha de seguridad que afecte a esos datos.</li>
         <li>

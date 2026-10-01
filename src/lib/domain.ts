@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { normalizePhone, tryNormalizePhone } from './phone';
+import { ANONYMIZED_NAME, ANONYMIZED_PHONE, eraseCustomerPersonalData } from './erasure';
 export { normalizePhone } from './phone';
 
 export const statuses = ['nueva', 'pendiente', 'en_proceso', 'cita_creada', 'completada', 'cancelada'] as const;
@@ -306,9 +307,12 @@ export function applyCommand(current: State, command: Command, now = new Date())
     const customer = s.customers.find(c => c.id === command.id);
     if (!customer) throw new Error('No se ha encontrado el cliente.');
     checkVersion(customer, command);
+    // First, while the record still holds its real name/phone/plates: scrub
+    // the history (conversations, request/appointment free text, merge audit).
+    eraseCustomerPersonalData(s, customer.id);
     for (const v of s.vehicles) if (v.customer_id === customer.id && v.plate) { v.plate = ''; v.version = (v.version ?? 1) + 1; }
-    customer.name = 'Cliente anonimizado';
-    customer.phone = '+00000000';
+    customer.name = ANONYMIZED_NAME;
+    customer.phone = ANONYMIZED_PHONE;
     customer.phone_e164 = null;
     customer.notes = `${ANONYMIZED_MARKER} el ${now.toISOString().slice(0, 10)} a petición del cliente (derecho de supresión, RGPD/LOPDGDD).`;
     customer.version = (customer.version ?? 1) + 1;

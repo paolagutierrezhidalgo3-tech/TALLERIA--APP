@@ -1,7 +1,7 @@
 import { searchText } from './search';
 import { applyCommand, type Command, type State } from './domain';
 import { createDemo } from './demo';
-import { upgradeDemo } from './demo-migration';
+import { DEMO_SCHEMA_VERSION, upgradeDemo } from './demo-migration';
 import { defaultQuery, projectState, type LookupOption, type ViewQuery } from './queries';
 export interface WorkshopRepository {
   load(query?: ViewQuery): Promise<State>;
@@ -21,6 +21,10 @@ export interface WorkshopRepository {
 }
 export const KEY = 'talleria.demo.v2';
 export const LEGACY = 'talleria.demo.v1';
+// Every write goes to KEY and drops the pre-v2 copy: leaving it behind would
+// keep data the current state no longer has (e.g. an anonymized customer's)
+// and bring it back if KEY were ever cleared.
+export function saveDemo(state: State): void { localStorage.setItem(KEY, JSON.stringify(state)); localStorage.removeItem(LEGACY); }
 export class DemoRepository implements WorkshopRepository {
   private query: ViewQuery = defaultQuery;
   constructor(private role: 'owner' | 'staff' = 'owner') {}
@@ -32,12 +36,12 @@ export class DemoRepository implements WorkshopRepository {
       try {
         state = JSON.parse(saved) as State;
         if (!state.workshop?.id || !Array.isArray(state.customers) || !Array.isArray(state.requests) || !Array.isArray(state.vehicles) || !Array.isArray(state.conversations) || !Array.isArray(state.appointments)) throw new Error();
-        upgraded = state.schema_version !== 5;
+        upgraded = state.schema_version !== DEMO_SCHEMA_VERSION;
         state = upgradeDemo(state);
       } catch { throw new Error('Los datos demo guardados no se pueden leer. Usa «Restablecer demo» para recuperarlos.'); }
     } else state = upgradeDemo(createDemo());
     state.role = this.role; state.user_id = 'demo-' + this.role;
-    if (upgraded) localStorage.setItem(KEY, JSON.stringify(state));
+    if (upgraded) saveDemo(state);
     return state;
   }
   async load(query = this.query): Promise<State> {
@@ -53,7 +57,7 @@ export class DemoRepository implements WorkshopRepository {
   async execute(command: Command): Promise<State> {
     const save = async () => {
       const state = applyCommand(this.read(), command);
-      localStorage.setItem(KEY, JSON.stringify(state));
+      saveDemo(state);
       return projectState(state,this.query);
     };
     // Cross-tab read/modify/write serialization where Web Locks are supported.
@@ -67,6 +71,6 @@ export class DemoRepository implements WorkshopRepository {
   }
   async reset(): Promise<State> {
     if(this.role!=='owner') throw new Error('Solo el propietario puede realizar esta operación.');
-    const state=upgradeDemo(createDemo()); localStorage.setItem(KEY,JSON.stringify(state)); return this.load();
+    const state=upgradeDemo(createDemo()); saveDemo(state); return this.load();
   }
 }

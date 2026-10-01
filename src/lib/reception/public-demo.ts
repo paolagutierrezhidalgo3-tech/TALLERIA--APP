@@ -1,6 +1,6 @@
 import { applyCommand, type Command } from '@/lib/domain';
 import { upgradeDemo } from '@/lib/demo-migration';
-import { KEY, LEGACY } from '@/lib/repository';
+import { KEY, LEGACY, saveDemo } from '@/lib/repository';
 import type { IntakeSubmission } from './use-intake-wizard';
 export interface PublicWorkshopInfo { name: string; address: string; hours: string }
 /** Demo-mode counterpart of the real public_workshop_info/public_intake
@@ -30,7 +30,7 @@ export async function publicDemoIntake(slug: string, submission: IntakeSubmissio
     if (!state || state.workshop.slug !== slug) return false;
     const command: Command = { type: 'intake', ...submission, channel: 'public', consent };
     const next = applyCommand(state, command);
-    localStorage.setItem(KEY, JSON.stringify(next));
+    saveDemo(next);
     return true;
   };
   if (typeof navigator !== 'undefined' && navigator.locks) return navigator.locks.request(KEY, () => save());
