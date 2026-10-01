@@ -80,6 +80,15 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
         personal del taller —nunca tus datos como cliente— amparado en cláusulas contractuales tipo aprobadas
         por la Comisión Europea.
       </p>
+      <p>
+        Esta página y el formulario se alojan en Vercel, el proveedor que sirve la aplicación web a tu
+        navegador. Si se produce un error técnico mientras los usas, la información técnica de ese error
+        puede enviarse a Sentry, un servicio de monitorización de errores, si está configurado, para poder
+        corregirlo; no se graba tu
+        sesión. La ubicación de los servidores de estos dos proveedores, y las garantías aplicables a una
+        posible transferencia internacional de datos, están pendientes de confirmar antes de usar este
+        formulario con clientes reales.
+      </p>
       <h2>6. Conservación</h2>
       <p>
         Conservamos tus datos mientras exista una relación con el taller y, tras finalizar esta, durante el
