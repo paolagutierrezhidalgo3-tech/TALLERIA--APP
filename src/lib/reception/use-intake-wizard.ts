@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { intakeSchema, type Intake, type Message } from '@/lib/domain';
-import { MockReceptionProvider, questions } from './provider';
+import { MockReceptionProvider, answerValue, questions } from './provider';
 const provider = new MockReceptionProvider();
 export interface IntakeSubmission { id: string; data: Intake; messages: Message[] }
 /** Shared question-flow state machine behind both the staff-facing manual
@@ -22,7 +22,7 @@ export function useIntakeWizard(onSubmit: (submission: IntakeSubmission) => Prom
     e.preventDefault(); if (!answer.trim() || busy) return; setError('');
     const q = questions[count];
     if (!q) return;
-    const value = q.optional && /^(omitir|no|ninguna)$/i.test(answer.trim()) ? '' : answer.trim();
+    const value = answerValue(q, answer);
     const validation = intakeSchema.shape[q.field].safeParse(value);
     if (!validation.success) { setError(validation.error.issues[0].message); return; }
     const next: Message[] = [...messages, { role: 'user', content: answer.trim() }];

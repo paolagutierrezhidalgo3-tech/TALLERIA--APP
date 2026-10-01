@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyCommand, businessHoursForDate, intakeSchema, isWorkshopEmpty, localMinutesOfDay, type Command, type Intake, type State } from './domain';
-import { MockReceptionProvider, questions } from './reception/provider';
+import { MockReceptionProvider, UNKNOWN_MODEL, answerValue, questions } from './reception/provider';
 const now = new Date('2030-01-01T08:00:00Z');
 const intake: Intake = { name: 'Cliente Prueba', phone: '600 123 456', brand: 'SEAT', model: 'León', plate: '1234 bcd', reason: 'Revisión anual', availability: 'Mañanas', notes: '' };
 function empty(): State { return { workshop: { version: 1, hours_version: 1, id: crypto.randomUUID(), name: 'Taller Uno', phone: '', address: '', hours: '', timezone: 'Europe/Madrid', appointment_minutes: 60 }, customers: [], vehicles: [], conversations: [], requests: [], appointments: [] }; }
@@ -52,6 +52,35 @@ describe('Recepción y organización', () => {
     const draft = await new MockReceptionProvider().extract(messages);
     expect(draft.name).toBe('María'); expect(draft.plate).toBe(''); expect(draft.notes).toBe('');
     expect(intakeSchema.safeParse(draft).success).toBe(true);
+  });
+  it('ofrece «no lo sé» en el paso del modelo', () => {
+    expect(questions.find(q => q.field === 'model')?.prompt).toContain('«no lo sé»');
+  });
+  it('convierte «no lo sé» del modelo en un valor fijo no vacío', () => {
+    const model = questions.find(q => q.field === 'model')!;
+    for (const raw of ['no lo sé', 'No lo se', 'NO LO SÉ', '  no  lo   sé.  ', 'no sé', 'No se', 'ns', 'Desconocido', 'no lo sé', 'no sé']) expect(answerValue(model, raw)).toBe(UNKNOWN_MODEL);
+    for (const raw of ['Yaris', 'Novia', 'No', 'no lo sé todavía', 'Desconocido 2']) expect(answerValue(model, raw)).toBe(raw);
+    expect(intakeSchema.shape.model.safeParse(UNKNOWN_MODEL).success).toBe(true);
+  });
+  it('el atajo del modelo no afecta a otras preguntas', () => {
+    const field = (f: keyof Intake) => questions.find(q => q.field === f)!;
+    expect(answerValue(field('brand'), 'no lo sé')).toBe('no lo sé');
+    expect(answerValue(field('plate'), 'no lo sé')).toBe('no lo sé');
+    expect(answerValue(field('plate'), 'omitir')).toBe('');
+    expect(answerValue(field('notes'), 'Ninguna')).toBe('');
+  });
+  it('extrae «Modelo no indicado» y lo aplica por los canales manual y público', async () => {
+    const values = ['María', '611222333', 'Toyota', 'no lo sé', 'omitir', 'Cambio de aceite', 'Mañanas', 'omitir'];
+    const messages = questions.flatMap((q, i) => [{ role: 'assistant' as const, content: q.prompt }, { role: 'user' as const, content: values[i] }]);
+    const draft = await new MockReceptionProvider().extract(messages);
+    expect(draft.model).toBe(UNKNOWN_MODEL);
+    const data = intakeSchema.parse(draft);
+    const manual = applyCommand(empty(), { type: 'intake', id: crypto.randomUUID(), data, messages }, now);
+    const online = applyCommand(empty(), { type: 'intake', id: crypto.randomUUID(), data, messages, channel: 'public', consent: true }, now);
+    for (const s of [manual, online]) {
+      expect(s.vehicles[0].model).toBe(UNKNOWN_MODEL);
+      expect(s.conversations[0].messages.some(m => m.role === 'user' && m.content === 'no lo sé')).toBe(true);
+    }
   });
 });
 describe('Citas y estados', () => {
