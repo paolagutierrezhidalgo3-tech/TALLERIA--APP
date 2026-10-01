@@ -13,6 +13,30 @@
 /* Keep visually hidden table headings inside the horizontal scroll container. */
 .table-wrap{position:relative}
 
+/* On phones the request list (Solicitudes + the dashboard's latest requests)
+ * becomes one card per row instead of a 5-column table that hid the status,
+ * the date and the only "open" button off-screen. Same markup as desktop: the
+ * headings stay in the accessibility tree (visually hidden), the markup's
+ * explicit ARIA table roles keep Safari/VoiceOver announcing a table despite
+ * the display changes, and each cell is placed by its own class, not by
+ * column order. */
+@media(max-width:700px){
+  .request-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+  .request-table,.request-table tbody{display:block}
+  .request-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"person action" "reason reason" "status date";align-items:center;gap:10px 12px;padding:16px;border-bottom:1px solid #f1f2f7}
+  .request-table tbody tr:last-child{border-bottom:0}
+  .request-table td{padding:0;border:0;min-width:0}
+  .request-table .request-person{grid-area:person}
+  .request-table .request-reason{grid-area:reason}
+  .request-table .request-status{grid-area:status}
+  .request-table .request-date{grid-area:date;justify-self:end;text-align:right}
+  .request-table .request-action{grid-area:action;justify-self:end}
+  .request-table .person-cell{min-width:0}
+  .request-table .person-cell>div{min-width:0}
+  .request-table .person-cell b,.request-table .person-cell small{overflow-wrap:anywhere}
+  .request-table .reason-cell{min-width:0;max-width:none;overflow-wrap:anywhere}
+}
+
 /* Tailwind's utilities live in a CSS cascade layer, so this file's unlayered
  * `input{width:100%;padding:...;border:...}` reset (above) always wins over
  * Tailwind's `.sr-only` regardless of selector specificity, leaving the
