@@ -2,7 +2,7 @@
 // it whenever the text of /terminos changes in substance, so a later
 // re-acceptance can tell who accepted which text: the publication date,
 // plus a .N suffix for a second revision published the same day.
-export const TERMS_VERSION = '2026-10-01.2';
+export const TERMS_VERSION = '2026-10-02';
 
 /** What signUp() stores in the new user's metadata as proof of acceptance.
  * Deliberately just user metadata, no table or migration: it is weak

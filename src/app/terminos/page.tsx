@@ -78,6 +78,11 @@ export default function Page() {
           conexiones cifradas.
         </li>
         <li>
+          Proteger la recepción digital frente a envíos abusivos: el servicio registra temporalmente la
+          dirección IP desde la que se envía cada solicitud, solo para limitar el número de envíos, y la
+          elimina como se indica en el aviso legal de la recepción digital.
+        </li>
+        <li>
           Ayudarte a atender los derechos de tus clientes. Para el derecho de supresión, la aplicación
           permite anonimizar a un cliente: sustituye el nombre, el teléfono y las observaciones de su ficha,
           borra las matrículas de sus vehículos y elimina sus datos personales del historial (todos los

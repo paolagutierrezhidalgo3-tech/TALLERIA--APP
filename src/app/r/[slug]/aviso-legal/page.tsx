@@ -58,12 +58,18 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
         No incluyas en los campos de texto libre datos de salud, origen étnico, opiniones políticas o
         religiosas u otras categorías especiales de datos: no son necesarios para gestionar tu consulta.
       </p>
+      <p>
+        Al enviar el formulario también se registra la dirección IP desde la que lo envías, únicamente para
+        limitar los envíos abusivos (como máximo cinco envíos aceptados por hora a este taller desde una misma
+        dirección IP). No se usa para nada más ni se muestra al taller.
+      </p>
       <h2>3. Finalidad</h2>
       <p>Gestionar tu solicitud: contactar contigo, valorar la intervención sobre tu vehículo y, en su caso, programar una cita.</p>
       <h2>4. Legitimación</h2>
       <p>
         El consentimiento que prestas al marcar la casilla de aceptación antes de enviar el formulario, y la
-        ejecución de las medidas precontractuales que solicitas.
+        ejecución de las medidas precontractuales que solicitas. El registro de la dirección IP se basa en el
+        interés legítimo en proteger el formulario frente a envíos abusivos.
       </p>
       <p>
         Este formulario está dirigido a personas mayores de 14 años. Si eres menor de esa edad, pide a tu
@@ -95,6 +101,11 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
         plazo en que puedan derivarse responsabilidades legales de ella (con carácter orientativo, hasta 5-6
         años desde el último contacto), salvo que una norma exija un plazo distinto. El taller debe confirmar
         este plazo con su propia asesoría.
+      </p>
+      <p>
+        El registro de la dirección IP deja de contar para el límite de envíos una hora después del envío y
+        se elimina automáticamente en un envío válido posterior que reciba el servicio. Este plazo se refiere a ese registro; los proveedores técnicos indicados arriba pueden
+        conservar datos de conexión en sus propios registros según sus condiciones.
       </p>
       <h2>7. Tus derechos</h2>
       <p>
