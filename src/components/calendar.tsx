@@ -1,9 +1,22 @@
 'use client';
+import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { businessHoursForDate, localDateParts, localMinutesOfDay, zonedTimeToUtc, type Appointment, type Command, type State } from '@/lib/domain';
-import { addDaysISO, endRowExclusive, fromMinutes, noon, rangeDatesForMode, rowContaining, toMinutes } from '@/lib/calendar-layout';
+import { addDaysISO, endRowExclusive, fromMinutes, isPastDay, isPastSlot, noon, rangeDatesForMode, rowContaining, suggestedStart, toMinutes } from '@/lib/calendar-layout';
 import { AppointmentCard, Empty } from './ui';
 type Execute = (c: Command) => Promise<boolean>;
+// The current instant, kept in state (render must stay pure) and refreshed
+// every minute, so slots and days turn "past" on their own while the
+// calendar stays open instead of only on the next reload. The second value
+// refreshes it on demand (e.g. a click on a slot that has just passed).
+function useNow(intervalMs = 60000): readonly [number, () => void] {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return [now, () => setNow(Date.now())] as const;
+}
 export interface CalendarProps {
   state: State;
   appointments: Appointment[];
@@ -13,7 +26,7 @@ export interface CalendarProps {
   onModeChange: (mode: 'day' | 'week') => void;
   anchor: string;
   onAnchorChange: (iso: string) => void;
-  onCreate: (resourceId: string, startsAtIso: string) => void;
+  onCreate: (resourceId: string, startsAtIso?: string) => void;
   onReprogram: (a: Appointment) => void;
   onCancel: (a: Appointment) => void;
 }
@@ -48,8 +61,12 @@ export function Calendar({ state, appointments, busy, execute, mode, onModeChang
 }
 interface PositionedItem { a: Appointment; startRow: number; span: number }
 function DayGrid({ state, appointments, dateISO, busy, execute, onCreate, onReprogram, onCancel }: { state: State; appointments: Appointment[]; dateISO: string; busy: boolean; execute: Execute; onCreate: CalendarProps['onCreate']; onReprogram: CalendarProps['onReprogram']; onCancel: CalendarProps['onCancel'] }) {
+  const [now, refreshNow] = useNow();
   const tz = state.workshop.timezone;
-  const ranges = businessHoursForDate(state, dateISO);
+  const todayISO = localDateParts(new Date(now), tz).date;
+  const pastDay = isPastDay(dateISO, todayISO);
+  // A past day's hours are never shown as open or closed (see isPastSlot).
+  const ranges = pastDay ? null : businessHoursForDate(state, dateISO);
   const activeResources = (state.resources ?? []).filter(r => r.active);
   // An appointment kept from before its resource was deactivated (only
   // possible for a completed/cancelled one -- deactivating a resource with a
@@ -58,6 +75,7 @@ function DayGrid({ state, appointments, dateISO, busy, execute, onCreate, onRepr
   const retiredIds = [...new Set(appointments.map(a => a.resource_id).filter((id): id is string => !!id && !activeResources.some(r => r.id === id)))];
   const columns = [...activeResources, ...retiredIds.map(id => ({ id, name: 'Recurso retirado', kind: 'bay' as const, active: false }))];
   if (!columns.length) return <Empty title="Añade un recurso para usar el calendario">Ve a Configuración → Recursos y capacidad para crear el primero.</Empty>;
+  if (pastDay && !appointments.length) return <Empty title="Día pasado">No hay citas registradas este día.</Empty>;
   if (ranges !== null && ranges.length === 0 && !appointments.length) return <Empty title="Taller cerrado este día">Puedes forzar una cita igualmente desde «Nueva cita» en la lista, pero aquí no hay horario que mostrar.</Empty>;
 
   // Grid sizing is a display heuristic only (how much of the day to show) --
@@ -129,23 +147,32 @@ function DayGrid({ state, appointments, dateISO, busy, execute, onCreate, onRepr
       });
       const slots = Array.from({ length: rows }).map((_, row) => {
         if (coveredRows.has(row)) return null;
-        const open = isRowOpen(row);
         const label = fromMinutes(gridStart + row * slot) + ' · ' + col.name;
-        return <button key={col.id + '-s-' + row} type="button" disabled={!open} className={'day-grid-slot' + (open ? '' : ' closed')} aria-label={open ? 'Crear cita a las ' + label : 'Fuera de horario, ' + label} style={{ gridColumn: colIdx + 2, gridRow: row + 2 }} onClick={() => onCreate(col.id, new Date(boundaries[row]).toISOString())}/>;
+        if (isPastSlot(dateISO, boundaries[row], todayISO, now)) return <button key={col.id + '-s-' + row} type="button" disabled className="day-grid-slot past" aria-label={'Pasado, ' + label} style={{ gridColumn: colIdx + 2, gridRow: row + 2 }}/>;
+        const open = isRowOpen(row);
+        return <button key={col.id + '-s-' + row} type="button" disabled={!open} className={'day-grid-slot' + (open ? '' : ' closed')} aria-label={open ? 'Crear cita a las ' + label : 'Fuera de horario, ' + label} style={{ gridColumn: colIdx + 2, gridRow: row + 2 }} onClick={() => {
+          // Checked again at the exact moment of the click: the rendered "now"
+          // can be up to a minute old. A slot that has just passed only repaints.
+          if (isPastSlot(dateISO, boundaries[row], localDateParts(new Date(), tz).date, Date.now())) refreshNow();
+          else onCreate(col.id, new Date(boundaries[row]).toISOString());
+        }}/>;
       });
       return [...blocks, ...slots];
     })}
   </div>;
 }
 function WeekStrip({ state, appointments, startISO, busy, execute, onCreate, onReprogram, onCancel, onOpenDay }: { state: State; appointments: Appointment[]; startISO: string; busy: boolean; execute: Execute; onCreate: CalendarProps['onCreate']; onReprogram: CalendarProps['onReprogram']; onCancel: CalendarProps['onCancel']; onOpenDay: (iso: string) => void }) {
+  const [now, refreshNow] = useNow();
   const tz = state.workshop.timezone;
-  const todayISO = localDateParts(new Date(), tz).date;
+  const todayISO = localDateParts(new Date(now), tz).date;
   const days = Array.from({ length: 7 }, (_, i) => addDaysISO(startISO, i));
   const firstActiveResource = (state.resources ?? []).find(r => r.active);
   return <div className="week-strip">
     {days.map(dayISO => {
+      const pastDay = isPastDay(dayISO, todayISO);
       const ranges = businessHoursForDate(state, dayISO);
-      const closed = ranges !== null && ranges.length === 0;
+      // A past day's exceptions aren't loaded: never claim it was closed.
+      const closed = !pastDay && ranges !== null && ranges.length === 0;
       // Overlap with the day's real instant span, not a string match on the
       // cita's own start date: a cita starting the previous evening and
       // ending after local midnight still belongs on this day too (it may
@@ -171,9 +198,16 @@ function WeekStrip({ state, appointments, startISO, busy, execute, onCreate, onR
                 onComplete={() => void execute({ type: 'appointment_status', id: a.id, version: a.version, request_version: request?.version, status: 'completed' })}
                 onCancel={() => onCancel(a)}/>;
             })}</div>}
-        {firstActiveResource && !closed && <button type="button" className="button small week-day-add" onClick={() => {
+        {firstActiveResource && !closed && !pastDay && <button type="button" className="button small week-day-add" onClick={() => {
           const openMinutes = ranges === null ? 9 * 60 : toMinutes(ranges[0].opens_at);
-          onCreate(firstActiveResource.id, new Date(zonedTimeToUtc(dayISO, fromMinutes(openMinutes), tz)).toISOString());
+          // Checked at the exact moment of the click, like the day grid's slots:
+          // the button may still show for a day that turned past at midnight
+          // since the last refresh -- then it only repaints. Today, never a start
+          // already gone (see suggestedStart).
+          const clickToday = localDateParts(new Date(), tz).date;
+          if (isPastDay(dayISO, clickToday)) { refreshNow(); return; }
+          const start = suggestedStart(dayISO, openMinutes, clickToday, Date.now(), tz);
+          onCreate(firstActiveResource.id, start === null ? undefined : new Date(start).toISOString());
         }}><Plus size={14}/>Nueva cita</button>}
       </div>;
     })}

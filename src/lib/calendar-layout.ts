@@ -2,7 +2,7 @@
 // React/JSX module) so it has direct unit coverage: this repo's test suite
 // has no JSX parsing/rendering harness (see components/workspace.test.ts),
 // so a .test.ts file can only import from a plain .ts module like this one.
-import { zonedTimeToUtc } from './domain';
+import { localMinutesOfDay, zonedTimeToUtc } from './domain';
 import type { ViewQuery } from './queries';
 
 // A "day" here is always a plain Y-M-D string, never an instant -- pure
@@ -65,4 +65,32 @@ export function endRowExclusive(instant: number, boundaries: number[]): number {
   const rows = boundaries.length - 1;
   for (let r = 1; r <= rows; r++) if (instant <= boundaries[r]) return r;
   return rows;
+}
+// "Past" for the calendar, always on the WORKSHOP's clock: a calendar date
+// before the workshop's today (both plain YYYY-MM-DD, so they compare as
+// strings), or a slot whose real start instant is not in the future -- the
+// same rule the server applies to a new appointment (starts_at <= now() is
+// rejected). Past days and slots are shown neutral and never offer to create
+// a cita: the server would refuse it, and a past day's exceptions aren't
+// loaded by workspace_snapshot (it only returns them from today on), so its
+// open/closed hours can't be shown reliably either.
+export function isPastDay(dateISO: string, todayISO: string): boolean {
+  return dateISO < todayISO;
+}
+export function isPastSlot(dateISO: string, slotStart: number, todayISO: string, now: number): boolean {
+  return isPastDay(dateISO, todayISO) || slotStart <= now;
+}
+// The start "Nueva cita" proposes for a day in the week view: the day's
+// opening time, unless that day is the workshop's today and the opening has
+// already passed -- then the next half hour still ahead (real instants, so a
+// DST change can't propose a time already gone), or null when no half hour
+// is left today (the editor then opens with an empty date).
+export function suggestedStart(dateISO: string, openingMinutes: number, todayISO: string, now: number, timeZone: string): number | null {
+  const opening = zonedTimeToUtc(dateISO, fromMinutes(openingMinutes), timeZone);
+  if (dateISO !== todayISO || opening > now) return opening;
+  for (let minutes = Math.ceil((localMinutesOfDay(new Date(now), timeZone) + 1) / 30) * 30; minutes < 1440; minutes += 30) {
+    const candidate = zonedTimeToUtc(dateISO, fromMinutes(minutes), timeZone);
+    if (candidate > now) return candidate;
+  }
+  return null;
 }

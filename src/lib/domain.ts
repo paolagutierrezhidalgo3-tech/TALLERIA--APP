@@ -338,6 +338,8 @@ export function applyCommand(current: State, command: Command, now = new Date())
   if (command.type === 'workshop_hour_exception') {
     const e = command.exception;
     if (e.workshop_id !== workshop_id) throw new Error('Taller no válido.');
+    // Same rule as the Horarios form: a past exception changes nothing.
+    if (typeof e.exception_date === 'string' && e.exception_date < localDateParts(now, s.workshop.timezone).date) throw new Error('La fecha de la excepción debe ser hoy o posterior.');
     const old = (s.hour_exceptions ?? []).find(item => item.id === e.id);
     // e.version only exists once the client has actually loaded a saved
     // exception; a stale edit/delete race that arrives after it's already

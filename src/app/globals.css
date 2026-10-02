@@ -105,6 +105,8 @@ input.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overf
 .day-grid-slot{border-bottom:1px solid #f2f2f7;border-right:1px solid #f2f2f7;background:transparent;padding:0}
 .day-grid-slot:hover:not(:disabled){background:var(--soft-purple)}
 .day-grid-slot.closed{background:repeating-linear-gradient(45deg,#f7f7fa,#f7f7fa 6px,#f1f1f5 6px,#f1f1f5 12px);cursor:default}
+/* Past slots: neutral (neither open nor closed) and never clickable. */
+.day-grid-slot.past{background:#fafafc;cursor:default}
 .day-grid-appointment{padding:2px;overflow:hidden}
 .day-grid-appointment .appointment-item{height:100%;padding:8px 10px;border-top:0;border-radius:8px;background:var(--soft-purple);gap:2px 10px;overflow:auto}
 .day-grid-appointment .appointment-time{font-size:11px;border-right:0;padding-right:0;min-width:0}
