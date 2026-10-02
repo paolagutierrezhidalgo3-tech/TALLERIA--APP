@@ -1,7 +1,7 @@
 'use client';
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { Check, Copy, Link as LinkIcon } from 'lucide-react';
-import { ANONYMIZED_MARKER, type Appointment, type Command, type Customer, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
+import { ANONYMIZED_MARKER, appointmentTimeHint, instantToZonedInput, zonedInputToInstant, type Appointment, type Command, type Customer, type ServiceRequest, type State, type Vehicle } from '@/lib/domain';
 import { Field, Modal } from './ui';
 import { Lookup, type FindOptions } from './lookup';
 type Execute = (c: Command) => Promise<boolean>;
@@ -31,7 +31,6 @@ export function VehicleEditor({ state, initial, execute, onClose, find }: { stat
   async function save(e: FormEvent) { e.preventDefault(); setBusy(true); if (await execute({ type: 'vehicle', vehicle: value })) onClose(); setBusy(false); }
   return <Modal title={initial ? 'Editar vehículo' : 'Nuevo vehículo'} onClose={onClose}><form onSubmit={save}><Lookup kind="customer" label="Cliente" disabled={!!initial} selected={value.customer_id} onChange={id=>setValue({...value,customer_id:id})} find={find} initial={state.customers.map(c=>({id:c.id,label:c.name}))}/><div className="form-grid"><Field label="Marca"><input required maxLength={60} value={value.brand} onChange={e => setValue({ ...value, brand: e.target.value })}/></Field><Field label="Modelo"><input required maxLength={80} value={value.model} onChange={e => setValue({ ...value, model: e.target.value })}/></Field></div><Field label="Matrícula (opcional)"><input maxLength={20} value={value.plate} onChange={e => setValue({ ...value, plate: e.target.value })}/></Field><button className="button primary full" disabled={busy || !value.customer_id}>Guardar vehículo</button></form></Modal>;
 }
-function localInput(iso: string) { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
 export function AppointmentEditor({ state, request, initial, execute, onClose, find, initialResourceId, initialStartsAt }: { state: State; request?: ServiceRequest; initial?: Appointment; execute: Execute; onClose: () => void; find: FindOptions; initialResourceId?: string; initialStartsAt?: string }) {
   const choices = state.requests.filter(r => !['cancelada', 'completada'].includes(r.status) && !state.appointments.some(a => a.request_id === r.id && a.status === 'scheduled' && a.id !== initial?.id));
   const [requestId, setRequestId] = useState(initial?.request_id ?? request?.id ?? choices[0]?.id ?? '');
@@ -40,22 +39,32 @@ export function AppointmentEditor({ state, request, initial, execute, onClose, f
   // click on an empty calendar slot); reprogramming an existing one, or
   // creating one from a solicitud's own "Crear cita" button, is unaffected.
   const [resourceId, setResourceId] = useState(initial?.resource_id ?? initialResourceId ?? state.resources?.find(r=>r.active)?.id ?? '');
-  const [starts, setStarts] = useState(initial ? localInput(initial.starts_at) : initialStartsAt ? localInput(initialStartsAt) : '');
+  // The date/time field is always the WORKSHOP's wall clock, like the
+  // calendar -- never the device's, which may be in another timezone.
+  const timeZone = state.workshop.timezone;
+  // An existing appointment's own time, as shown in the field: while the
+  // field still holds it, saving keeps the original instant, so changing only
+  // the notes or duration never moves a cita that falls on a repeated DST hour.
+  const originalInput = initial ? instantToZonedInput(initial.starts_at, timeZone) : '';
+  const [starts, setStarts] = useState(initial ? originalInput : initialStartsAt ? instantToZonedInput(initialStartsAt, timeZone) : '');
+  const keepsOriginal = !!initial && starts === originalInput;
+  const startsHint = useMemo(() => appointmentTimeHint(starts, timeZone, Intl.DateTimeFormat().resolvedOptions().timeZone, keepsOriginal), [starts, timeZone, keepsOriginal]);
   const [minutes, setMinutes] = useState(initial?.duration_minutes ?? state.workshop.appointment_minutes);
   const [notes, setNotes] = useState(initial?.notes ?? '');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault(); setError('');
-    const date = new Date(String(new FormData(e.currentTarget).get('starts_at') ?? ''));
-    if (!Number.isFinite(date.getTime())) { setError('Selecciona una fecha y hora válidas.'); return; }
+    const value = String(new FormData(e.currentTarget).get('starts_at') ?? '');
+    const parsed = initial && value === originalInput ? { ok: true as const, iso: initial.starts_at, ambiguous: false } : zonedInputToInstant(value, timeZone);
+    if (!parsed.ok) { setError(parsed.reason === 'nonexistent' ? 'Esa hora no existe en la zona del taller por el cambio de hora; elige otra.' : 'Selecciona una fecha y hora válidas.'); return; }
     setBusy(true);
     try {
-      const ok = await execute({ type: 'appointment', version: initial?.version, request_version: requestVersion, id: initial?.id ?? crypto.randomUUID(), request_id: requestId, resource_id: resourceId, starts_at: date.toISOString(), duration_minutes: minutes, notes });
+      const ok = await execute({ type: 'appointment', version: initial?.version, request_version: requestVersion, id: initial?.id ?? crypto.randomUUID(), request_id: requestId, resource_id: resourceId, starts_at: parsed.iso, duration_minutes: minutes, notes });
       if (ok) onClose();
     } finally { setBusy(false); }
   }
-  return <Modal title={initial ? 'Reprogramar cita' : 'Crear cita'} onClose={onClose}><form onSubmit={save}><Lookup kind="request" label="Solicitud" disabled={!!initial||!!request} selected={requestId} onChange={(id,version)=>{setRequestId(id);setRequestVersion(version);}} find={find} initial={choices.map(r=>({id:r.id,version:r.version,label:(state.customers.find(c=>c.id===r.customer_id)?.name??"")+" · "+r.reason}))}/><Field label="Recurso"><select required value={resourceId} onChange={e=>setResourceId(e.target.value)}><option value="">Selecciona un recurso</option>{state.resources?.filter(r=>r.active).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></Field><Field label="Fecha y hora" hint={'Introduce la hora de tu dispositivo (' + Intl.DateTimeFormat().resolvedOptions().timeZone + '). La agenda se muestra en ' + state.workshop.timezone + '.'}><input required name="starts_at" type="datetime-local" value={starts} onChange={e => setStarts(e.target.value)}/></Field><Field label="Duración (minutos)"><input required type="number" min={15} max={480} step={15} value={minutes} onChange={e => setMinutes(Number(e.target.value))}/></Field><Field label="Notas de la cita"><textarea maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}/></Field><p role="alert" className={error ? "notice error" : "sr-only"}>{error}</p><button className="button primary full" disabled={busy || !requestId}>{busy ? 'Guardando…' : 'Guardar cita'}</button></form></Modal>;
+  return <Modal title={initial ? 'Reprogramar cita' : 'Crear cita'} onClose={onClose}><form onSubmit={save}><Lookup kind="request" label="Solicitud" disabled={!!initial||!!request} selected={requestId} onChange={(id,version)=>{setRequestId(id);setRequestVersion(version);}} find={find} initial={choices.map(r=>({id:r.id,version:r.version,label:(state.customers.find(c=>c.id===r.customer_id)?.name??"")+" · "+r.reason}))}/><Field label="Recurso"><select required value={resourceId} onChange={e=>setResourceId(e.target.value)}><option value="">Selecciona un recurso</option>{state.resources?.filter(r=>r.active).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></Field><Field label={'Fecha y hora (hora del taller: ' + timeZone + ')'} hint={startsHint}><input required name="starts_at" type="datetime-local" value={starts} onChange={e => setStarts(e.target.value)}/></Field><Field label="Duración (minutos)"><input required type="number" min={15} max={480} step={15} value={minutes} onChange={e => setMinutes(Number(e.target.value))}/></Field><Field label="Notas de la cita"><textarea maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}/></Field><p role="alert" className={error ? "notice error" : "sr-only"}>{error}</p><button className="button primary full" disabled={busy || !requestId}>{busy ? 'Guardando…' : 'Guardar cita'}</button></form></Modal>;
 }
 function PublicLink({ slug }: { slug?: string }) {
   const [copied, setCopied] = useState(false);

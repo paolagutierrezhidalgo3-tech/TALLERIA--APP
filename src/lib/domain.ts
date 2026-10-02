@@ -123,6 +123,60 @@ export function zonedTimeToUtc(isoDate: string, time: string, timeZone: string):
   const lowerIsValid = offsetMsAt(lowerCandidate, timeZone) === lower;
   return upperIsValid && !lowerIsValid ? upperCandidate : lowerCandidate;
 }
+// The value of an <input type="datetime-local"> ("YYYY-MM-DDTHH:MM") for an
+// instant, as the WORKSHOP's wall clock -- never the device's, which is what
+// the calendar and every other screen show too. '' for an invalid instant.
+export function instantToZonedInput(iso: string, timeZone: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return '';
+  // Only four-digit years, the only ones a datetime-local value (and the
+  // parser below) can carry.
+  const { date: day } = localDateParts(date, timeZone);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day < '1000') return '';
+  const minutes = localMinutesOfDay(date, timeZone);
+  return `${day}T${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+export type ZonedInputResult = { ok: true; iso: string; ambiguous: boolean } | { ok: false; reason: 'invalid' | 'nonexistent' };
+// The instant a datetime-local value means as the WORKSHOP's wall clock,
+// resolved exactly like zonedTimeToUtc / PostgreSQL. Around a DST change a
+// wall-clock time can be nonexistent (skipped: reported, never silently
+// shifted) or ambiguous (repeated: resolved like the server, i.e. to the
+// second occurrence, and flagged so the UI can say so).
+export function zonedInputToInstant(value: string, timeZone: string): ZonedInputResult {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::00(?:\.0+)?)?$/.exec(value.trim());
+  if (!match) return { ok: false, reason: 'invalid' };
+  const [y, m, d, hh, mm] = match.slice(1).map(Number);
+  // Years 1000-9999 only (Date.UTC maps 0-99 to 1900-1999).
+  if (y < 1000) return { ok: false, reason: 'invalid' };
+  const dateCheck = new Date(Date.UTC(y, m - 1, d));
+  if (dateCheck.getUTCFullYear() !== y || dateCheck.getUTCMonth() !== m - 1 || dateCheck.getUTCDate() !== d || hh > 23 || mm > 59) return { ok: false, reason: 'invalid' };
+  const isoDate = match.slice(1, 4).join('-');
+  const time = `${match[4]}:${match[5]}`;
+  const instant = zonedTimeToUtc(isoDate, time, timeZone);
+  if (instantToZonedInput(new Date(instant).toISOString(), timeZone) !== `${isoDate}T${time}`) return { ok: false, reason: 'nonexistent' };
+  // Ambiguous when both offsets in effect around this date map back to the
+  // same wall-clock time (same probing as zonedTimeToUtc).
+  const guess = Date.UTC(y, m - 1, d, hh, mm);
+  const dayMs = 86400000;
+  const nearby = offsetMsAt(guess - offsetMsAt(guess, timeZone), timeZone);
+  const offsets = [...new Set([offsetMsAt(guess - nearby - 2 * dayMs, timeZone), offsetMsAt(guess - nearby + 2 * dayMs, timeZone)])];
+  const valid = offsets.filter(offset => offsetMsAt(guess - offset, timeZone) === offset);
+  return { ok: true, iso: new Date(instant).toISOString(), ambiguous: valid.length > 1 };
+}
+// The hint under the appointment date/time field: a note when the device is
+// in another timezone than the workshop, and the DST cases of the value.
+// keepsOriginal: the field still shows an existing appointment's own time,
+// which the editor then saves unchanged (so an ambiguous one never moves).
+export function appointmentTimeHint(value: string, workshopTimeZone: string, deviceTimeZone: string, keepsOriginal = false): string | undefined {
+  const notes: string[] = [];
+  if (deviceTimeZone !== workshopTimeZone) notes.push(`Tu dispositivo está en ${deviceTimeZone}; introduce la hora del taller.`);
+  if (value) {
+    const parsed = zonedInputToInstant(value, workshopTimeZone);
+    if (parsed.ok && parsed.ambiguous) notes.push(keepsOriginal ? 'Esa hora se repite por el cambio de hora; se mantiene la de la cita.' : 'Esa hora se repite por el cambio de hora; se usará la segunda vez que ocurre.');
+    if (!parsed.ok && parsed.reason === 'nonexistent') notes.push('Esa hora no existe en la zona del taller por el cambio de hora.');
+  }
+  return notes.length ? notes.join(' ') : undefined;
+}
 // The open ranges that apply to one calendar date: an exception (if any)
 // replaces the weekly schedule entirely for that date (closed => no ranges
 // at all); otherwise the weekly ranges for that date's weekday apply. `null`

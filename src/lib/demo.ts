@@ -1,4 +1,4 @@
-import { applyCommand, type State } from './domain';
+import { applyCommand, localDateParts, zonedTimeToUtc, type State } from './domain';
 
 export function createDemo(): State {
   let state: State = { workshop: { id: 'b87fa1b8-c8c5-4612-8e89-a35c1b258621', name: 'Taller Motor Norte', phone: '910 000 000', address: 'Calle del Motor, 24 · Madrid', hours: 'L–V 09:00–14:00 y 16:00–19:00', timezone: 'Europe/Madrid', appointment_minutes: 60, hours_version: 1 }, customers: [], vehicles: [], conversations: [], requests: [], appointments: [] };
@@ -13,7 +13,11 @@ export function createDemo(): State {
   });
   state.requests[1].status = 'pendiente';
   state.requests[2].status = 'en_proceso';
-  const start = new Date(); start.setDate(start.getDate() + 1); start.setHours(10, 0, 0, 0);
+  // Tomorrow at 10:00 on the WORKSHOP's clock, not the device's (a device in
+  // another timezone used to put the sample cita at any hour).
+  const [y, m, d] = localDateParts(new Date(), state.workshop.timezone).date.split('-').map(Number);
+  const tomorrow = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  const start = new Date(zonedTimeToUtc(tomorrow, '10:00', state.workshop.timezone));
   state = applyCommand(state, { type: 'appointment', request_version: state.requests[3].version, id: crypto.randomUUID(), request_id: state.requests[3].id, starts_at: start.toISOString(), duration_minutes: 60, notes: 'Primera revisión del vehículo.' });
   return state;
 }
