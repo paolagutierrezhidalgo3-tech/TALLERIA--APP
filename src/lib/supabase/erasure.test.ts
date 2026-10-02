@@ -41,8 +41,10 @@ async function historyOf(customerId: string) {
   return { requests, conversations, appointments, vehicles, audit };
 }
 type History = Awaited<ReturnType<typeof historyOf>>;
-// Text only (ids are random UUIDs and could contain any digits).
-const textOf = (h: History) => JSON.stringify({ r: h.requests.map(r => [r.reason, r.availability, r.notes]), c: h.conversations, a: h.appointments.map(a => a.notes), v: h.vehicles.map(v => [v.brand, v.model, v.plate]), au: h.audit.map(a => a.metadata) });
+// Text only: ids are random UUIDs and could contain any digits, including
+// the audit metadata's original_customer id, so they are masked.
+const textOf = (h: History) => JSON.stringify({ r: h.requests.map(r => [r.reason, r.availability, r.notes]), c: h.conversations, a: h.appointments.map(a => a.notes), v: h.vehicles.map(v => [v.brand, v.model, v.plate]), au: h.audit.map(a => a.metadata) })
+  .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<id>');
 const versionsOf = (h: History) => JSON.stringify({ r: h.requests.map(r => r.version), a: h.appointments.map(a => a.version), v: h.vehicles.map(v => v.version) });
 const fullyErased = (messages: Message[]) => messages.length > 0 && messages.every(m => m.content === ERASED_MESSAGE && Object.keys(m).sort().join() === 'content,role');
 async function addAppointment(requestId: string, notes: string, startsAt: string) {
@@ -61,7 +63,8 @@ beforeAll(async () => {
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     grant usage on schema auth to authenticated, anon;
     insert into auth.users(id) values ('${owner}'),('${staff}'),('${outsider}');`);
-  for (const file of migrations.filter(f => f !== erasureMigration)) await db.exec(readFileSync('supabase/migrations/' + file, 'utf8'));
+  // Only the migrations BEFORE 015 (pinned, so later ones never run ahead of it).
+  for (const file of migrations.filter(f => f < erasureMigration)) await db.exec(readFileSync('supabase/migrations/' + file, 'utf8'));
   await asUser(owner);
   workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller Borrado') id")).rows[0].id;
   await asUser(outsider);

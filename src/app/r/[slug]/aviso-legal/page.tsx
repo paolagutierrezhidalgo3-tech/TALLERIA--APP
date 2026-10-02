@@ -61,7 +61,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string 
       <p>
         Al enviar el formulario también se registra la dirección IP desde la que lo envías, únicamente para
         limitar los envíos abusivos (como máximo cinco envíos aceptados por hora a este taller desde una misma
-        dirección IP). No se usa para nada más ni se muestra al taller.
+        dirección IP). Si tu conexión usa IPv6, solo se registra el prefijo de tu red (no la dirección
+        completa) y el límite se aplica a toda esa red. Si no se puede determinar la dirección de la conexión,
+        esos envíos comparten un límite común. No se usa para nada más ni se muestra al taller.
       </p>
       <h2>3. Finalidad</h2>
       <p>Gestionar tu solicitud: contactar contigo, valorar la intervención sobre tu vehículo y, en su caso, programar una cita.</p>
