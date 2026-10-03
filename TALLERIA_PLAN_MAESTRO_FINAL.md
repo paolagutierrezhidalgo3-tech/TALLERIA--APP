@@ -309,18 +309,19 @@ Este archivo debe estar en el repositorio y ser leído al inicio. Su mera presen
 
 Actualizar al finalizar cada sesión significativa y al cerrar cada bloque. Mantener este apartado como el resumen vigente; conservar el historial relevante en el control de versiones.
 
-### Checkpoint actual — 3 de octubre de 2026 (mantenimiento de seguridad y limpieza de documentación)
+### Checkpoint actual — 3 de octubre de 2026 (alcance del pentest definido, sin ejecutar)
 
 | Campo | Estado |
 | --- | --- |
-| Bloque actual | Ninguno en curso. Últimos bloques cerrados: mantenimiento de seguridad (sección 7, punto 26) -- Next.js 16.3.8 y cinco cabeceras de seguridad, sin migración -- y limpieza de documentación (README, `CLAUDE.md` y este plan), sin código |
+| Bloque actual | Preparación del pentest con Strix: **alcance definido y versionado** en `docs/pentest-scope.md` (3 de octubre de 2026); Strix **no instalado ni ejecutado** y proyecto Supabase de pruebas **no creado**. Bloques cerrados antes: mantenimiento de seguridad (sección 7, punto 26) y limpieza de documentación (README, `CLAUDE.md` y este plan) |
 | Estado del producto | MVP funcional cerrado (fase K); auditoría visual/UX cerrada; términos de servicio con aceptación en el alta; anonimización completa (migración 015); conservación limitada de las IPs de la recepción pública (016); límite de envíos con IP de confianza (017); editor de citas en la hora del taller; días y huecos pasados no reservables en el calendario; Next.js 16.3.8 y cabeceras de seguridad (este bloque, sin migración) |
 | Supabase real | Migraciones 001–017 aplicadas; este bloque no la toca |
 | Prerrequisitos de piloto real pendientes | (1) `OPERATOR_NAME`/`OPERATOR_TAX_ID`/`OPERATOR_CONTACT_EMAIL` deliberadamente sin configurar hasta que exista una entidad o autónoma detrás de TALLERIA; (2) `LEGAL_TAX_ID`/`LEGAL_CONTACT_EMAIL` del taller piloto; (3) situación legal/fiscal de quien opera TALLERIA; (4) confirmar la ubicación de Vercel y Sentry y las garantías de transferencia internacional; (5) revisión profesional de `/terminos` y del aviso legal; (6) revisar la decisión de no pedir aceptación retroactiva de los términos a las cuentas existentes. Señalados en la auditoría final del 3 de octubre de 2026, pendientes de decidir con el usuario: alta de talleres abierta en producción con los términos incompletos; condiciones de los planes gratuitos para un uso comercial (Vercel Hobby) y pausa por inactividad y copias de seguridad de Supabase Free; procedimiento para la baja de un taller (`/terminos` la ofrece por email); dominio propio de Resend si el piloto necesita avisos por correo al equipo del taller; un envío público real de extremo a extremo tras la 017 |
 | Pendientes técnicos no ligados al piloto | Ninguno abierto (la limpieza de documentación de la auditoría final se cerró el 3 de octubre de 2026). Mejoras futuras documentadas, no abordadas: punto 24 (más de 100 excepciones; requeriría migración) y CSP completa (punto 26) |
 | Para reevaluar con datos del piloto | Tope global de envíos públicos por taller y hora (sección 7, punto 22, no adoptado); comportamiento con Cloudflare Pseudo IPv4 (punto 21, no verificado) |
 | Puede esperar | Datos legales por taller en base de datos (solo con más de un taller en el mismo despliegue); CAPTCHA invisible (p. ej. Turnstile) como antibots de fondo; rango tablet 701-900px de Solicitudes; botón `›` de 34px; prueba con VoiceOver real |
-| Detalle | Ver los dos últimos checkpoints del historial (3 de octubre de 2026: mantenimiento de seguridad y limpieza de documentación) |
+| Pentest (Strix) | Solo contra un entorno aislado: proyecto Supabase **de pruebas** (migraciones 001–017, datos ficticios, confirmación por correo desactivada) y build local de la app conectado a él; clave secreta solo del proyecto de pruebas; sin `RESEND_API_KEY` ni Sentry; con acceso al código. Prohibido producción, datos reales e infraestructura de Supabase, Vercel, Resend, Sentry, Cloudflare y GitHub. Pendiente, cada paso con autorización del usuario: crear el proyecto de pruebas, preparar el entorno local, instalar Strix y ejecutarlo |
+| Detalle | Ver los últimos checkpoints del historial (3 de octubre de 2026: mantenimiento de seguridad, limpieza de documentación y alcance del pentest) |
 
 ### Plantilla de actualización
 
@@ -1436,10 +1437,37 @@ Build: `pnpm run build` -- correcto
 git diff --check: limpio, antes y después de las correcciones de Codex
 Pruebas manuales: comprobación de cada dato nuevo del README contra el código (`.env.example`, `.github/workflows/ci.yml`, el límite de 5 envíos por hora de la migración 017, la ventana de 2 minutos de los avisos por correo de la 010, rutas existentes) y de que sus enlaces internos apuntan a archivos existentes
 Revisión de Codex: 1 ronda (subagente `codex:codex-rescue`, solo lectura), contrastando la documentación con el código. Sin altos. 1 medio: el README y la fila "Cumplimiento" de la sección 2 decían que las IPs se borran pasada una hora, cuando solo se borran con el siguiente envío válido (limitación ya registrada con la 016) -> corregido en ambos. 4 bajos del README -> corregidos: la recepción demo no funciona en incógnito (vive en el almacenamiento local del perfil); la ficha muestra hasta 200 solicitudes, no "todas"; el aviso de 30 s se pausa con la pestaña no visible; sin token, el job de despliegue arranca y solo omite sus pasos de instalación y despliegue. Confirmado por Codex: los 10 commits de la conciliación y `fe9804a` existen y sus asuntos coinciden; rutas, ruta API única, migraciones, variables, comandos, aceptación de términos, «Modelo no indicado», cabeceras, Sentry, textos de la interfaz y enlaces del README coinciden con el código; `CLAUDE.md` conserva `@AGENTS.md` y sus reglas coinciden con el plan; los marcadores "[Superado]" son correctos. No verificable sin conexión: los identificadores de ejecución del CI (comprobados antes contra la API de GitHub), la configuración externa de Vercel y lo aplicado en Supabase
-Commit de cierre confirmado: pendiente de la aprobación del usuario
-Push: pendiente
-Despliegue: el push dispararía el CI y un despliegue sin cambios de la aplicación
+Commit de cierre confirmado: sí -- `b128cc9` (confirmado retroactivamente al escribir el checkpoint siguiente)
+Push: confirmado (`fe9804a..b128cc9` a origin/main)
+Despliegue: verificado -- workflow CI de `b128cc9` (run 37111192702) en success, con el job "Typecheck, lint, test, build" (pasos de tests y build incluidos) y el job "Deploy to Vercel (production)" (paso "Deploy prebuilt output" incluido) en success; producción respondía 200, sin cambios de la aplicación
 Bloqueos o limitaciones: ninguna
 Próximo paso exacto: a decisión del usuario -- los requisitos previos a un piloto real del checkpoint actual
+Actualización de este plan versionada: sí, en el mismo commit que este bloque
+```
+
+```text
+Fecha: 3 de octubre de 2026
+Rama y HEAD comprobados: main, HEAD `b128cc9` (limpieza de documentación) al empezar, igual a `origin/main`
+Bloque actual y alcance: preparación documental del pentest con Strix -- definir el alcance y evitar que la documentación histórica (`docs/`) se tome como especificación actual. Sin código, configuración, migraciones ni Supabase. Strix no se instala ni se ejecuta en este bloque
+Estado: cerrado en lo documental -- alcance definido y versionado; commit y push a petición del usuario (antes de reiniciar el ordenador). El pentest en sí no ha empezado
+Hecho en esta sesión: (1) Comprobación estructural previa (solo lectura) contra un checklist de preparación de proyectos: PRD y tareas cubiertos por este plan; sin guía de diseño (puede esperar); `docs/architecture.md` contradecía el código; repositorio público con `main` sin protección y sin licencia; sin vigilancia continua de vulnerabilidades en dependencias; la demo local no sirve para el pentest (sin backend) y atacar producción está descartado. (2) `docs/pentest-scope.md` (nuevo): entorno aislado (proyecto Supabase de pruebas con las migraciones 001-017 y datos ficticios, confirmación por correo desactivada; build local de la app conectado solo a él; clave secreta solo del proyecto de pruebas; sin `RESEND_API_KEY`, `NOTIFICATIONS_FROM_EMAIL`, Sentry, `LEGAL_*` ni `OPERATOR_*`; comprobación previa de que la URL de Supabase es la de pruebas); cuentas de prueba (owner y staff del taller A, owner del taller B, cuenta sin taller); lo prohibido (producción, datos reales, infraestructura de terceros, denegación de servicio, carga, fuerza bruta masiva, ingeniería social; parar si algo llega a producción); superficie (páginas, `/api/notify-new-request`, Auth, tablas, funciones y quién puede llamarlas); matriz de permisos esperada (comprobada contra las migraciones: auditoría solo para el owner por RLS; `create_workshop` devuelve el taller existente a quien ya tiene uno); controles a intentar romper; limitaciones ya aceptadas; reglas operativas (ritmo bajo, hallazgos como bloques normales, informes fuera del repositorio mientras sea público, borrar el proyecto de pruebas al terminar). (3) `docs/architecture.md` y `docs/iteration-2.md`: aviso de documento histórico al principio y marcas "[Superado: ...]" en las frases que ya no son ciertas (invitaciones, IP del límite de envíos, el límite que no falla en silencio, horario que ya restringe citas, ruta de servidor, despliegue, lista de migraciones, versión de Next.js, pendientes), sin borrar información histórica. (4) `README.md`: enlace al alcance del pentest en "Seguridad" y descripción de `docs/`
+Decisiones confirmadas: Strix solo contra el entorno aislado de pruebas, nunca producción ni recursos reales; clave secreta solo del proyecto de pruebas en el entorno local; sin `RESEND_API_KEY` ni envío de correos; Strix con acceso al código del repositorio; este plan se actualiza al cerrar el bloque
+Archivos principales: `docs/pentest-scope.md` (nuevo), `docs/architecture.md`, `docs/iteration-2.md`, `README.md`, `TALLERIA_PLAN_MAESTRO_FINAL.md` (checkpoint actual, este checkpoint y la confirmación del anterior)
+Pendientes concretos y hallazgos menores: decidir la visibilidad del repositorio (público hoy; este plan contiene emails de cuenta en el historial) y la protección de `main`; vigilancia de dependencias (alertas de Dependabot o `pnpm audit` en el CI); ninguno bloquea preparar el entorno de pruebas
+Migraciones preparadas (identificador y finalidad): ninguna
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no aplica
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna; 001-017 siguen como estaban
+Tests: no aplica (solo documentación; el último resultado, 443 pasados y 3 saltados, es del bloque anterior)
+Typecheck: no aplica
+Lint: no aplica
+Build: no aplica
+git diff --check: limpio; los 11 enlaces internos de los cuatro documentos apuntan a archivos existentes
+Pruebas manuales: no aplica
+Revisión de Codex: no realizada (solo documentación; no solicitada por el usuario)
+Commit de cierre confirmado: ver el checkpoint siguiente o el historial de git -- este mismo checkpoint va en el commit del bloque, aprobado por el usuario
+Push: a origin/main, en esta misma sesión
+Despliegue: el push dispara el CI y un despliegue sin cambios de la aplicación
+Bloqueos o limitaciones: ninguna
+Próximo paso exacto: con autorización del usuario en cada paso -- crear el proyecto Supabase de pruebas y aplicar en él las migraciones 001-017 (nunca en producción), preparar el entorno local y las cuentas ficticias según `docs/pentest-scope.md`, instalar Strix y ejecutarlo
 Actualización de este plan versionada: sí, en el mismo commit que este bloque
 ```

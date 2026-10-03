@@ -57,7 +57,7 @@ src/
 supabase/migrations/      Tablas, separación por taller, permisos y comandos (001 a 017)
 scripts/                  Consulta de solo lectura y aplicación de migraciones con TLS verificado (uso interno)
 .github/workflows/ci.yml  Checks en cada push/PR y despliegue a producción
-docs/                     Notas históricas de arquitectura y de la segunda iteración
+docs/                     Notas históricas de arquitectura y de la segunda iteración, y alcance del pentest
 ```
 
 Consulta [la arquitectura](docs/architecture.md) para conocer las relaciones y las decisiones de seguridad iniciales; recoge el diseño de las primeras iteraciones, no todos los cambios posteriores (para eso, el plan maestro).
@@ -98,6 +98,8 @@ Cuando llega una solicitud pública, el panel la avisa (comprobación cada 30 se
 WhatsApp, n8n, llamadas, pagos, diagnóstico automático, facturación, stock y contabilidad no están implementados.
 
 ## Seguridad
+
+Las pruebas de seguridad adversariales (pentest) solo se hacen contra un entorno aislado y con datos ficticios, nunca contra producción: el alcance, la superficie y la matriz de permisos esperada están en [`docs/pentest-scope.md`](docs/pentest-scope.md).
 
 Todas las rutas envían cabeceras de seguridad (`X-Frame-Options: SAMEORIGIN`, `frame-ancestors 'self'`, `nosniff`, `Referrer-Policy` y `Permissions-Policy`), definidas en `src/lib/security.ts`. No hay una Content-Security-Policy completa para scripts y conexiones (decisión documentada en el plan maestro). Para la anonimización de clientes (derecho de supresión) y la conservación de datos, consulta el plan maestro.
 

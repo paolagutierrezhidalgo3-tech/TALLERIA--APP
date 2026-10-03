@@ -1,8 +1,10 @@
 # Segunda iteración: decisiones y operación
 
+> **Documento histórico (marcado el 3 de octubre de 2026).** Describe las decisiones y la operación de la segunda iteración (septiembre de 2026) y no se mantiene al día: **no es la especificación actual** del producto ni de su seguridad. Lo vigente está en el código, en [`README.md`](../README.md), en el checkpoint actual de [`TALLERIA_PLAN_MAESTRO_FINAL.md`](../TALLERIA_PLAN_MAESTRO_FINAL.md) y, para las pruebas de seguridad, en [`pentest-scope.md`](pentest-scope.md). Las frases que ya no son ciertas van marcadas como *[Superado: …]*; el resto se conserva como registro de las decisiones de su momento.
+
 ## Actualizar sin perder la primera iteración
 
-Aplicar las migraciones en orden: 202609200001_initial.sql, 202609200002_capacity_security.sql y 202609200003_paged_workspace.sql y 202609200004_search_versions.sql. Si 001 ya está aplicada, ejecutar las pendientes: 002, 003 y 004. No ejecutar de nuevo la inicial ni reemplazar tablas. Hacer una copia de seguridad antes de migrar datos reales y verificar en un proyecto de pruebas.
+*[Superado: hoy hay que aplicar las migraciones 001 a 017 de `supabase/migrations`, en orden; esta lista solo cubría hasta la 004.]* Aplicar las migraciones en orden: 202609200001_initial.sql, 202609200002_capacity_security.sql y 202609200003_paged_workspace.sql y 202609200004_search_versions.sql. Si 001 ya está aplicada, ejecutar las pendientes: 002, 003 y 004. No ejecutar de nuevo la inicial ni reemplazar tablas. Hacer una copia de seguridad antes de migrar datos reales y verificar en un proyecto de pruebas.
 
 002 asigna un «Puesto principal» a cada taller y a sus citas anteriores. Fusiona clientes cuyos teléfonos representan el mismo número: conserva el UUID menor, reasigna vehículos y solicitudes y guarda los campos originales del duplicado en audit_events.metadata.original_customer, visible solo al owner. Los teléfonos antiguos que no se puedan interpretar se conservan con phone_e164 nulo y se señalan para revisión manual. No se inventa un número ni se descarta el cliente.
 
@@ -18,7 +20,7 @@ Se admiten otros países mediante prefijo internacional explícito. La función 
 
 Cada cita ocupa un recurso activo: puesto, mecánico o elevador. Un recurso admite una cita simultánea. Recursos distintos pueden tener citas a la misma hora. El owner añade, renombra y desactiva recursos en Configuración; límite MVP de 50, al menos uno activo. Para desactivar uno, sus citas programadas deben reasignarse o cerrarse primero. No se eliminan recursos para preservar el histórico.
 
-Una cita todavía reserva un único recurso, no varios recursos combinados. No hay turnos individuales, vacaciones ni cálculo automático de disponibilidad según horario. El horario del taller sigue siendo informativo. La fila del taller se bloquea durante cada comando: serializa escrituras cortas y evita carreras en solapamientos y unicidad. PostgreSQL es la autoridad, incluso si el navegador tiene datos antiguos.
+Una cita todavía reserva un único recurso, no varios recursos combinados. No hay turnos individuales, vacaciones ni cálculo automático de disponibilidad según horario. El horario del taller sigue siendo informativo. *[Superado: ver «Horarios estructurados» más abajo; desde las migraciones 008/009 el horario restringe las citas.]* La fila del taller se bloquea durante cada comando: serializa escrituras cortas y evita carreras en solapamientos y unicidad. PostgreSQL es la autoridad, incluso si el navegador tiene datos antiguos.
 
 ## Autorización y escritura
 
@@ -26,7 +28,7 @@ owner: toda operación normal, configuración y recursos; acceso de lectura a au
 
 Se mantienen RLS, claves compuestas por taller, escrituras directas revocadas, funciones de escritura SECURITY DEFINER con search_path vacío y RPC de lectura SECURITY INVOKER. Versiones optimistas en clientes, vehículos, recursos y taller evitan sobrescribir ediciones obsoletas. Errores de unicidad, referencias, campos o carreras se traducen a mensajes controlados. El adaptador no intenta validar unicidad ni capacidad con una página parcial.
 
-La gestión de invitaciones queda pendiente. Para probar staff real: crear/confirmar una cuenta Auth sin crearle un taller; un administrador de confianza añade su UUID a workshop_members con el workshop_id correcto y role='staff', desde SQL Editor. No dar al cliente permisos para insertar membresías. El onboarding crea owners; cada cuenta sigue perteneciendo a un único taller. Un futuro comando de invitación debe reservarse a owner y verificar identidad de destinatario.
+La gestión de invitaciones queda pendiente. *[Superado: implementada en la migración 005; el resto de este párrafo describe el procedimiento manual anterior.]* Para probar staff real: crear/confirmar una cuenta Auth sin crearle un taller; un administrador de confianza añade su UUID a workshop_members con el workshop_id correcto y role='staff', desde SQL Editor. No dar al cliente permisos para insertar membresías. El onboarding crea owners; cada cuenta sigue perteneciendo a un único taller. Un futuro comando de invitación debe reservarse a owner y verificar identidad de destinatario.
 
 ## Carga y límites
 
@@ -44,13 +46,13 @@ Configurar NEXT_PUBLIC_DATA_MODE=supabase, NEXT_PUBLIC_SUPABASE_URL y NEXT_PUBLI
 
 Configurar Site URL y URLs de redirección en Supabase Auth para el dominio real; confirmar correo e iniciar sesión. Aplicar migraciones antes de activar el modo real. En Vercel importar el mismo repositorio, instalar con pnpm install --frozen-lockfile, compilar con pnpm build, añadir las tres variables y volver a desplegar cuando cambien. No se requiere service_role, Storage, n8n ni proveedor IA para esta iteración.
 
-Next 16.3.5 instalado sí reconoce experimental.useTypeScriptCli: se conserva false junto con workerThreads/cpus porque el verificador en un subproceso falla por permisos en este entorno Windows. No es una opción inválida en esta versión; además se ejecuta typecheck de forma explícita. Revisarlo al actualizar Next.
+*[Superado en la versión: hoy está instalado Next.js 16.3.8; la configuración de `experimental` sigue igual.]* Next 16.3.5 instalado sí reconoce experimental.useTypeScriptCli: se conserva false junto con workerThreads/cpus porque el verificador en un subproceso falla por permisos en este entorno Windows. No es una opción inválida en esta versión; además se ejecuta typecheck de forma explícita. Revisarlo al actualizar Next.
 
 ## Verificación y pendientes
 
 Pruebas de dominio y PostgreSQL/PGlite cubren equivalencia de teléfonos, migración con datos previos, referencias, recursos simultáneos, versiones obsoletas, permisos, RLS, paginación, auditoría e idempotencia/límites. Ejecutar pnpm typecheck, pnpm lint, pnpm test y pnpm build. Probar el flujo conversacional y el cambio de roles demo, la confirmación de cancelación y el móvil.
 
-Falta validar las migraciones y el flujo Auth sobre un Supabase real (PGlite no reemplaza esa validación), provisionar Vercel, recuperación de contraseña, invitaciones, política de retención/consentimiento, realtime y calendario avanzado. No se añaden WhatsApp, telefonía, n8n, Stripe ni IA real. ReceptionProvider permanece desacoplado.
+*[Superado: casi todo lo de este párrafo ya está hecho -- Supabase real verificado, despliegue en Vercel, recuperación de contraseña, invitaciones, consentimiento y conservación de datos, y calendario; se descartó Supabase Realtime en favor de un aviso por consulta periódica. Lo pendiente vigente está en el checkpoint actual del plan maestro.]* Falta validar las migraciones y el flujo Auth sobre un Supabase real (PGlite no reemplaza esa validación), provisionar Vercel, recuperación de contraseña, invitaciones, política de retención/consentimiento, realtime y calendario avanzado. No se añaden WhatsApp, telefonía, n8n, Stripe ni IA real. ReceptionProvider permanece desacoplado.
 
 ## Cierre de auditoría: búsqueda y concurrencia
 
