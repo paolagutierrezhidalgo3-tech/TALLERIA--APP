@@ -1,3 +1,17 @@
+// Response headers for every route (next.config.ts). Deliberately not a full
+// Content-Security-Policy: script-src/connect-src would have to list the
+// Supabase and Sentry hosts known only at build time, and Next's inline
+// scripts would need 'unsafe-inline' or per-request nonces. Framing stays
+// same-origin (not DENY) so the same-origin iframe used for mobile checks
+// keeps working; no other site may embed any page. clipboard-write is left
+// alone: the editor's "copy link" button uses it.
+export const SECURITY_HEADERS: ReadonlyArray<{ key: string; value: string }> = [
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+  { key: 'Content-Security-Policy', value: "frame-ancestors 'self'; base-uri 'self'; object-src 'none'" },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+];
 /** Configuration guard, not JWT verification. Never log the supplied key. */
 export function assertPublicSupabaseKey(key: string): void {
   if (/^sb_publishable_[A-Za-z0-9_-]+$/.test(key)) return;
