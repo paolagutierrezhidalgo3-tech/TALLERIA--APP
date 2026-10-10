@@ -37,7 +37,7 @@ describe('workspace.tsx: ficha de cliente/vehículo', () => {
   // these pin the fix (closing it everywhere the session/workshop actually
   // changes) at the source level, since there's no component test harness.
   it('load() cierra cualquier ficha abierta al arrancar una sesión/taller nuevo (evita que sobreviva a un cambio de cuenta)', () => {
-    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository)');
+    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository');
     const end = source.indexOf('}, [reads]);');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
@@ -113,16 +113,20 @@ describe('workspace.tsx: aviso de solicitudes nuevas', () => {
   it('load(), refresh(), la carga de página y el sync demo reclaman y comprueban frescura como cualquier lectura ordinaria; resetDemo() invalida las lecturas pendientes tras restablecer', () => {
     const resetDemoBlock = source.slice(source.indexOf('async function resetDemo()'), source.indexOf('async function resetDemo()') + 800);
     expect(resetDemoBlock).toMatch(/reads\.invalidatePendingReads\(\)/);
-    for (const fn of ['const load = useCallback(async (repo: WorkshopRepository)', 'async function refresh()', 'const sync = ()']) {
+    for (const fn of ['const load = useCallback(async (repo: WorkshopRepository', 'async function refresh()', 'const sync = ()']) {
       const start = source.indexOf(fn);
       expect(start).toBeGreaterThan(-1);
-      const block = source.slice(start, start + 2200);
+      // load() is bounded by its own end (its comments make it longer than a
+      // fixed window); the shorter functions keep the fixed window.
+      const end = fn.startsWith('const load') ? source.indexOf('}, [reads]);', start) : start + 2200;
+      expect(end).toBeGreaterThan(start);
+      const block = source.slice(start, end);
       expect(block).toMatch(/reads\.claimRead\(\)/);
       expect(block).toMatch(/reads\.isFresh\(claim\)/);
     }
   });
   it('load() solo avisa de una solicitud pasiva cuando el taller es el mismo que ya se veía (evita que una recarga de sesión para el MISMO taller se pierda el aviso, y que abrir un taller distinto reporte su propio historial como "nuevo")', () => {
-    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository)');
+    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository');
     const end = source.indexOf('}, [reads]);', start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
@@ -137,8 +141,8 @@ describe('workspace.tsx: aviso de solicitudes nuevas', () => {
     const updateIndex = block.indexOf('lastWorkshopIdRef.current = next.workshop.id');
     expect(updateIndex).toBeGreaterThan(compareIndex);
   });
-  it('endSession() limpia lastWorkshopIdRef y avanza sessionEpochRef, y se llama desde logout(), la resolución de sesión sin usuario, y el signOut() de recuperación de contraseña', () => {
-    expect(source).toMatch(/function endSession\(\)\s*\{\s*lastWorkshopIdRef\.current = null;\s*sessionEpochRef\.current \+= 1;\s*\}/);
+  it('endSession() limpia lastWorkshopIdRef y la sesión en pantalla y avanza sessionEpochRef, y se llama desde logout(), la resolución de sesión sin usuario, y el signOut() de recuperación de contraseña', () => {
+    expect(source).toMatch(/function endSession\(\)\s*\{\s*lastWorkshopIdRef\.current = null;\s*appSessionRef\.current = null;\s*sessionEpochRef\.current \+= 1;\s*\}/);
     const logoutStart = source.indexOf('async function logout()');
     const logoutEnd = source.indexOf('catch (err) { setError', logoutStart);
     expect(logoutStart).toBeGreaterThan(-1);
@@ -163,7 +167,7 @@ describe('workspace.tsx: aviso de solicitudes nuevas', () => {
     expect(endSessionIndex).toBeGreaterThan(signOutIndex);
   });
   it('load() descarta su propio resultado si sessionEpochRef avanzó mientras esperaba (un logout/fin de sesión real ocurrido a mitad de una carga en vuelo no debe resucitar lastWorkshopIdRef ni volver a la pantalla "app")', () => {
-    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository)');
+    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository');
     const end = source.indexOf('}, [reads]);', start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
@@ -182,7 +186,7 @@ describe('workspace.tsx: aviso de solicitudes nuevas', () => {
     expect(screenAppIndex).toBeGreaterThan(checkIndex);
   });
   it('load() usa authGenerationRef (no reads) para descartar el catch de un load() antiguo cuando otro load()/session() más nuevo ya se aplicó, incluso sin ningún logout real de por medio', () => {
-    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository)');
+    const start = source.indexOf('const load = useCallback(async (repo: WorkshopRepository');
     const catchStart = source.indexOf('} catch (err) {', start);
     const end = source.indexOf('}, [reads]);', start);
     expect(start).toBeGreaterThan(-1);

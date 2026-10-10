@@ -7,7 +7,7 @@ import { DemoRepository, type WorkshopRepository } from '@/lib/repository';
 import { getSupabase, isSupabaseMode } from '@/lib/supabase/client';
 import { SupabaseRepository } from '@/lib/supabase/repository';
 import { acceptInvitation, declineInvitation, myPendingInvitation, type PendingInvitation } from '@/lib/supabase/team';
-import { resolveSession } from '@/lib/supabase/session';
+import { canSkipReload, resolveSession, type ShownSession } from '@/lib/supabase/session';
 import { AuthScreen } from './auth-screen';
 import { AppointmentCard, Badge, dateLabel, Empty, Field, initials, Modal } from './ui';
 import { AppointmentEditor, CustomerEditor, Settings, VehicleEditor } from './editors';
@@ -101,7 +101,14 @@ export function Workspace() {
   // read-freshness (ReadCoordinator) doesn't catch this, because ending a
   // session is neither a read nor a mutation to it.
   const sessionEpochRef = useRef(0);
-  function endSession() { lastWorkshopIdRef.current = null; sessionEpochRef.current += 1; }
+  // The user and workshop actually on screen (see isSameAppSession): set
+  // only where load() puts the screen on 'app', cleared on every way out of
+  // it. sessionUserIdRef is the user the latest session() resolution
+  // belongs to, so the onboarding/invitation flows that end in load() can
+  // record who that session is for.
+  const appSessionRef = useRef<ShownSession<WorkshopRepository> | null>(null);
+  const sessionUserIdRef = useRef<string | null>(null);
+  function endSession() { lastWorkshopIdRef.current = null; appSessionRef.current = null; sessionEpochRef.current += 1; }
   // Orders session()/load() auth resolutions by recency ONLY against each
   // other -- deliberately its own counter, separate from the ReadCoordinator
   // (`reads`) used below for metrics freshness. Sharing `reads` was tried
@@ -209,7 +216,7 @@ export function Workspace() {
     }
     if (metrics?.new_requests !== undefined) knownNewRequestsRef.current = metrics.new_requests;
   }
-  const load = useCallback(async (repo: WorkshopRepository) => {
+  const load = useCallback(async (repo: WorkshopRepository, userId: string | null = null) => {
     repository.current = repo;
     // load() is a plain read like any other ordinary one (poll, refresh,
     // navigation, demo sync), not a write -- it has no special claim to
@@ -240,6 +247,13 @@ export function Workspace() {
       // entirely rather than resurrecting lastWorkshopIdRef or flipping the
       // screen back to 'app' after the user is already logged out.
       if (sessionEpochRef.current !== epochAtStart) return;
+      // A newer session()/load() started while this was in flight (e.g.
+      // another tab switched accounts and back): that one decides what the
+      // panel shows, so this late response -- possibly another account's
+      // data -- must not land on top of it, same as the catch below. The
+      // newer call never skips its own reload in this situation: this
+      // load() already swapped repository.current, so canSkipReload fails.
+      if (authGenerationRef.current !== authGeneration) return;
       const fresh = reads.isFresh(claim);
       if (fresh) {
         // Same workshop as the last load() actually applied -> an ordinary
@@ -253,6 +267,7 @@ export function Workspace() {
         lastWorkshopIdRef.current = next.workshop.id;
       }
       setState(prev => (fresh || !prev ? next : { ...next, metrics: prev.metrics }));
+      appSessionRef.current = userId ? { userId, workshopId: next.workshop.id, repo } : null;
       setScreen('app'); setError('');
     } catch (err) {
       if (recovering.current) return;
@@ -273,6 +288,7 @@ export function Workspace() {
       // swallow a load() failure that is otherwise still the most recent
       // session()/load() call.
       if (authGenerationRef.current !== authGeneration) return;
+      appSessionRef.current = null;
       setError(err instanceof Error ? err.message : 'No se han podido cargar los datos.'); setScreen('auth');
     }
   }, [reads]);
@@ -345,7 +361,24 @@ export function Workspace() {
       // stale resolution (even one ending in 'auth') can never override a
       // faster, newer one that already applied successfully.
       if (authGenerationRef.current !== authGeneration) return;
-      if (resolution.screen === 'app') { await load(new SupabaseRepository(resolution.workshopId)); return; }
+      sessionUserIdRef.current = resolution.screen === 'auth' ? null : resolution.userId;
+      // Same user and same workshop as the panel already shows: Supabase
+      // only re-validated the session (a token refresh, every ~13 minutes
+      // with 900 s access tokens; a tab regaining focus). The server checks
+      // above still ran on this event -- getUser() and the membership
+      // lookup -- so another account, another workshop or a removed member
+      // never matches and falls through to the branches below. Reloading
+      // here would throw the user back to the dashboard, clear search and
+      // filters and close the open ficha. Nothing on screen goes stale by
+      // skipping it: a member's role never changes (the owner is the
+      // creator, invitees are always staff), every owner-only action is
+      // enforced server-side, and the poll keeps the metrics current. Only
+      // while the active repository is still the one that session was
+      // loaded through: otherwise a load() for another session is in
+      // flight and the panel must be reloaded for this one (canSkipReload).
+      if (canSkipReload(appSessionRef.current, repository.current, resolution)) return;
+      if (resolution.screen === 'app') { await load(new SupabaseRepository(resolution.workshopId), resolution.userId); return; }
+      appSessionRef.current = null;
       if (resolution.screen === 'invitation') { setPendingInvitation(resolution.pending); setScreen('invitation'); return; }
       if (resolution.screen === 'onboarding') { setScreen('onboarding'); return; }
       setState(null);
@@ -370,7 +403,7 @@ export function Workspace() {
         // password; route to that screen instead of resolving a normal
         // session, and ignore the SIGNED_OUT/USER_UPDATED churn that flow
         // produces so it doesn't yank the screen away mid-flow.
-        if (event === 'PASSWORD_RECOVERY') { recovering.current = true; setScreen('reset-password'); return; }
+        if (event === 'PASSWORD_RECOVERY') { recovering.current = true; appSessionRef.current = null; setScreen('reset-password'); return; }
         if (recovering.current) return;
         void session();
       }, 0); });
@@ -514,14 +547,14 @@ export function Workspace() {
       const name = String(new FormData(e.currentTarget).get('name')).trim();
       const { data, error: rpcError } = await getSupabase().rpc('create_workshop', { p_name: name });
       if (rpcError) throw rpcError;
-      await load(new SupabaseRepository(data as string));
+      await load(new SupabaseRepository(data as string), sessionUserIdRef.current);
     } catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido crear el taller.'); }
     finally { setBusy(false); }
   }
   async function acceptInvite() {
     if (!pendingInvitation) return;
     setBusy(true); setError('');
-    try { const workshopId = await acceptInvitation(pendingInvitation.id); setPendingInvitation(null); await load(new SupabaseRepository(workshopId)); }
+    try { const workshopId = await acceptInvitation(pendingInvitation.id); setPendingInvitation(null); await load(new SupabaseRepository(workshopId), sessionUserIdRef.current); }
     catch (err) { setError(err instanceof Error ? err.message : 'No se ha podido aceptar la invitación.'); }
     finally { setBusy(false); }
   }
