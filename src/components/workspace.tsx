@@ -23,6 +23,7 @@ import { calendarQueryFor } from '@/lib/calendar-layout';
 import { newRequestsMessage } from '@/lib/in-app-alerts';
 import { ReadCoordinator } from '@/lib/read-coordinator';
 import { withTimeout } from '@/lib/with-timeout';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, newPasswordProblem, passwordUpdateErrorMessage } from '@/lib/auth-messages';
 
 // How often the app checks, in the background, whether a new solicitud has
 // arrived (public reception, or another team member) while this tab stays
@@ -537,8 +538,10 @@ export function Workspace() {
       const form = new FormData(e.currentTarget);
       const password = String(form.get('password')), confirm = String(form.get('confirm'));
       if (password !== confirm) throw new Error('Las contraseñas no coinciden.');
+      const problem = newPasswordProblem(password);
+      if (problem) throw new Error(problem);
       const { error: updateError } = await getSupabase().auth.updateUser({ password });
-      if (updateError) throw updateError;
+      if (updateError) throw new Error(passwordUpdateErrorMessage(updateError));
       await getSupabase().auth.signOut();
       // This signOut() bypasses both logout() and session()'s own reset:
       // recovering.current is still true here, so the SIGNED_OUT auth event
@@ -578,7 +581,7 @@ export function Workspace() {
   if (screen === 'invitation') return <main className="onboarding">{errorBanner}<div className="card"><span className="feature-icon"><Wrench/></span><h1>Te han invitado a un taller</h1>{pendingInvitation && <p className="muted">{pendingInvitation.invited_by_email} te ha invitado a unirte a <b>{pendingInvitation.workshop_name}</b> como parte de su equipo.</p>}<button className="button primary full" disabled={busy} onClick={() => void acceptInvite()}>Unirme al taller<ArrowRight size={18}/></button><button type="button" className="text-button" disabled={busy} onClick={() => void declineInvite()}>Rechazar y crear mi propio taller</button><button type="button" className="text-button" onClick={() => void logout()}>Cerrar sesión</button></div></main>;
   if (screen === 'reset-password') return <main className="onboarding">{errorBanner}{passwordUpdated
     ? <div className="card"><span className="feature-icon"><Wrench/></span><h1>Contraseña actualizada</h1><p className="muted">Ya puedes iniciar sesión con tu nueva contraseña.</p><button className="button primary full" onClick={backToLogin}>Ir a iniciar sesión<ArrowRight size={18}/></button></div>
-    : <form className="card" onSubmit={updatePassword}><span className="feature-icon"><Wrench/></span><h1>Establece tu nueva contraseña</h1><Field label="Nueva contraseña"><input required name="password" type="password" minLength={8} maxLength={128} autoComplete="new-password"/></Field><Field label="Confirma tu contraseña"><input required name="confirm" type="password" minLength={8} maxLength={128} autoComplete="new-password"/></Field><button className="button primary full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar contraseña'}<ArrowRight size={18}/></button></form>}</main>;
+    : <form className="card" onSubmit={updatePassword}><span className="feature-icon"><Wrench/></span><h1>Establece tu nueva contraseña</h1><Field label="Nueva contraseña" hint={`Mínimo ${PASSWORD_MIN_LENGTH} caracteres.`}><input required name="password" type="password" minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_LENGTH} autoComplete="new-password"/></Field><Field label="Confirma tu contraseña"><input required name="confirm" type="password" minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_LENGTH} autoComplete="new-password"/></Field><button className="button primary full" disabled={busy}>{busy ? 'Guardando…' : 'Guardar contraseña'}<ArrowRight size={18}/></button></form>}</main>;
   if (!state) return null;
   const currentPage = pages.find(p => p.id === page)!;
   const newCount = state.metrics?.new_requests ?? 0;
