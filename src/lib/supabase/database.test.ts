@@ -1049,3 +1049,81 @@ describe('migración 020: anonimización de las cuentas eliminadas', () => {
     expect(t).toEqual([{ timing: 'BEFORE', event: 'DELETE' }]);
   });
 });
+describe('migración 021: invite_member y revoke_invitation iguales en producción y en el repositorio', () => {
+  const owner = '20210000-0000-4000-8000-000000000000', ownerEmail = 'owner210@example.com';
+  const staff = '20210000-0000-4000-8000-000000000001', staffEmail = 'staff211@example.com';
+  const other = '20210000-0000-4000-8000-000000000002', otherEmail = 'other212@example.com';
+  const migration = readFileSync('supabase/migrations/202610110021_sync_invitation_functions.sql', 'utf8');
+  const rollback = readFileSync('supabase/rollbacks/202610110021_sync_invitation_functions.rollback.sql', 'utf8');
+  const names = ['invite_member', 'revoke_invitation'];
+  let workshop: string, otherWorkshop: string;
+  const rows = async <T,>(sql: string, params: unknown[] = []) => { await db.exec('reset role'); return (await db.query<T>(sql, params)).rows; };
+  const fns = () => rows<{ name: string; src: string; acl: string; definer: boolean; config: string; owner: string }>(
+    "select p.proname as name, md5(replace(p.prosrc, chr(13), '')) src, p.proacl::text acl, p.prosecdef definer, array_to_string(p.proconfig, ',') config, pg_get_userbyid(p.proowner) owner from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = any($1) order by 1", [names]);
+  const others = () => rows<{ name: string; def: string }>(
+    "select p.oid::regprocedure::text as name, md5(pg_get_functiondef(p.oid)) def from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f' and p.proname <> all($1) order by 1", [names]);
+  const data = () => rows<{ t: string; h: string }>(
+    "select 'invitations' t, md5(coalesce(string_agg(i::text, ',' order by i.id), '')) h from public.workshop_invitations i union all select 'audit', md5(coalesce(string_agg(a::text, ',' order by a.id), '')) from public.audit_events a union all select 'members', md5(coalesce(string_agg(m::text, ',' order by m.user_id), '')) from public.workshop_members m order by 1");
+  const body = (sql: string, name: string) => { const i = sql.indexOf(`function public.${name}(`); const a = sql.indexOf('$$', i) + 2; return sql.slice(a, sql.indexOf('$$', a)); };
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2),($3,$4),($5,$6)', [owner, ownerEmail, staff, staffEmail, other, otherEmail]);
+    await asUser(owner); workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller 021') id")).rows[0].id;
+    await asUser(other); otherWorkshop = (await db.query<{ id: string }>("select public.create_workshop('Otro taller 021') id")).rows[0].id;
+  });
+  it('redefine las dos funciones con los cuerpos exactos del archivo 005', async () => {
+    const team = readFileSync('supabase/migrations/202609210005_team_management.sql', 'utf8').replace(/\r\n/g, '\n');
+    for (const name of names) {
+      expect(body(migration.replace(/\r\n/g, '\n'), name)).toBe(body(team, name));
+      const src = (await rows<{ src: string }>('select prosrc src from pg_proc where oid = $1::regproc', [`public.${name}`]))[0].src;
+      expect(src).toBe(body(team, name));
+    }
+  });
+  it('la reversión deja exactamente las versiones de producción y la 021 vuelve a las del repositorio, sin tocar datos, permisos ni otras funciones', async () => {
+    const before = await fns(), otherFns = await others(), rowsBefore = await data();
+    await db.exec(rollback);
+    const old = await fns();
+    // md5 of prosrc read from production on 11 October 2026, without CR characters (production stores these bodies with CRLF line endings).
+    expect(old.map(f => [f.name, f.src])).toEqual([['invite_member', 'f865c7aec1906d3d057e1012f2126021'], ['revoke_invitation', 'c13eb2965915df1772fc089f3ccdf092']]);
+    expect(old.map(f => [f.acl, f.definer, f.config, f.owner])).toEqual(before.map(f => [f.acl, f.definer, f.config, f.owner]));
+    await db.exec(migration);
+    expect(await fns()).toEqual(before);
+    expect(await others()).toEqual(otherFns);
+    expect(await data()).toEqual(rowsBefore);
+  });
+  it('con las versiones de producción, revocar una invitación aceptada da un mensaje genérico; con la 021, el específico', async () => {
+    await asUser(owner); const id = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, staffEmail])).rows[0].id;
+    await asUser(staff); await db.query('select public.accept_invitation($1)', [id]);
+    await db.exec('reset role'); await db.exec(rollback);
+    await asUser(owner); await expect(db.query('select public.revoke_invitation($1)', [id])).rejects.toThrow('La invitación ya no está disponible.');
+    await db.exec('reset role'); await db.exec(migration);
+    await asUser(owner); await expect(db.query('select public.revoke_invitation($1)', [id])).rejects.toThrow('ya se unió');
+    expect(await rows('select status from public.workshop_invitations where id = $1', [id])).toEqual([{ status: 'accepted' }]);
+  });
+  it('con la 021, invitar a quien ya es miembro de otro taller da su mensaje y las pendientes vencidas pasan a caducadas', async () => {
+    await asUser(owner);
+    await expect(db.query('select public.invite_member($1,$2)', [workshop, otherEmail])).rejects.toThrow('ya pertenece a otro taller');
+    await expect(db.query('select public.invite_member($1,$2)', [workshop, staffEmail])).rejects.toThrow('ya pertenece a un miembro de este taller');
+    const stale = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, 'vencida213@example.com'])).rows[0].id;
+    await db.exec('reset role'); await db.query("update public.workshop_invitations set expires_at = now() - interval '1 day' where id = $1", [stale]);
+    await asUser(owner); await db.query('select public.invite_member($1,$2)', [workshop, 'nueva214@example.com']);
+    expect(await rows('select status from public.workshop_invitations where id = $1', [stale])).toEqual([{ status: 'expired' }]);
+  });
+  it('invite_member bloquea el taller con FOR NO KEY UPDATE y revoke_invitation bloquea la invitación antes de mirar su estado', async () => {
+    const inv = (await rows<{ d: string }>("select pg_get_functiondef('public.invite_member'::regproc) d"))[0].d;
+    expect(inv).toMatch(/from public\.workshops where id = p_workshop_id for no key update/);
+    const rev = (await rows<{ d: string }>("select pg_get_functiondef('public.revoke_invitation'::regproc) d"))[0].d;
+    expect(rev).toMatch(/from public\.workshop_invitations where id = p_invitation_id for update/);
+  });
+  it('una cuenta invitada con la 021 y borrada después queda anonimizada (019 y 020)', async () => {
+    await db.exec('reset role'); await db.query("insert into auth.users(id,email) values('20210000-0000-4000-8000-000000000005','borrar215@example.com')");
+    await asUser(owner); const id = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, 'borrar215@example.com'])).rows[0].id;
+    await asUser('20210000-0000-4000-8000-000000000005'); await db.query('select public.accept_invitation($1)', [id]);
+    await db.exec('reset role'); await db.query("delete from auth.users where id = '20210000-0000-4000-8000-000000000005'");
+    const r = await rows<{ email: string; status: string; accepted_by: string | null }>('select email, status, accepted_by from public.workshop_invitations where id = $1', [id]);
+    expect(r[0].email).toMatch(/^cuenta-eliminada-[0-9a-f]{32}@anonimizado\.invalid$/);
+    expect([r[0].status, r[0].accepted_by]).toEqual(['accepted', null]);
+    expect(await rows("select metadata->>'email' e from public.audit_events where action = 'member_invited' and entity_id = $1", [id])).toEqual([{ e: 'cuenta eliminada' }]);
+    expect(otherWorkshop).toBeTruthy();
+  });
+});
