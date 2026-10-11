@@ -919,3 +919,133 @@ describe('migración 019: borrado de cuentas con invitaciones', () => {
     expect((await db.query("select 1 from pg_trigger where tgrelid = 'auth.users'::regclass and tgname = 'prevent_owner_account_deletion' and not tgisinternal")).rows).toHaveLength(1);
   });
 });
+
+describe('migración 020: anonimización de las cuentas eliminadas', () => {
+  const ownerA = '20200000-0000-4000-8000-000000000000', ownerAEmail = 'owner200@example.com';
+  const ownerB = '20200000-0000-4000-8000-000000000001', ownerBEmail = 'owner201@example.com';
+  const staff = '20200000-0000-4000-8000-000000000002', staffEmail = 'staff202@example.com';
+  const pending = '20200000-0000-4000-8000-000000000004', pendingEmail = 'pend204@example.com';
+  const otherEmail = 'other203@example.com';
+  const placeholder = /^cuenta-eliminada-[0-9a-f]{32}@anonimizado\.invalid$/;
+  let wA: string, wB: string;
+  const rows = async <T,>(sql: string, params: unknown[] = []) => { await db.exec('reset role'); return (await db.query<T>(sql, params)).rows; };
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2),($3,$4),($5,$6),($7,$8)', [ownerA, ownerAEmail, ownerB, ownerBEmail, staff, staffEmail, pending, pendingEmail]);
+    await asUser(ownerA); wA = (await db.query<{ id: string }>("select public.create_workshop('Taller 020') id")).rows[0].id;
+    await asUser(ownerB); wB = (await db.query<{ id: string }>("select public.create_workshop('Otro taller 020') id")).rows[0].id;
+    // Invited by B first, then by A, accepted in A: B's invitation expires.
+    await db.query('select public.invite_member($1,$2)', [wB, staffEmail]);
+    await asUser(ownerA);
+    const invA = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [wA, staffEmail])).rows[0].id;
+    await db.query('select public.invite_member($1,$2)', [wA, otherEmail]);
+    await db.query('select public.invite_member($1,$2)', [wA, pendingEmail]);
+    await asUser(staff); await db.query('select public.accept_invitation($1)', [invA]);
+  });
+  it('baja de miembro: su correo desaparece de todas sus invitaciones y de la auditoría, y se conserva el registro', async () => {
+    await db.exec('reset role');
+    await db.query('delete from auth.users where id=$1', [staff]);
+    expect(await rows('select 1 from public.workshop_invitations where email=$1', [staffEmail])).toHaveLength(0);
+    const anon = await rows<{ workshop_id: string; email: string; status: string }>("select workshop_id, email, status from public.workshop_invitations where email like 'cuenta-eliminada-%' and workshop_id in ($1,$2) order by status", [wA, wB]);
+    expect(anon.map(r => [r.workshop_id === wA ? 'A' : 'B', r.status])).toEqual([['A', 'accepted'], ['B', 'expired']]);
+    for (const r of anon) expect(r.email).toMatch(placeholder);
+    const invited = await rows<{ email: string }>("select metadata->>'email' email from public.audit_events where action='member_invited' and workshop_id in ($1,$2)", [wA, wB]);
+    expect(invited.filter(r => r.email === staffEmail)).toHaveLength(0);
+    expect(invited.filter(r => r.email === 'cuenta eliminada')).toHaveLength(2);
+    expect(await rows("select 1 from public.audit_events where action='member_joined' and entity_id=$1 and workshop_id=$2", [staff, wA])).toHaveLength(1);
+  });
+  it('no toca las invitaciones ni la auditoría de otros correos', async () => {
+    expect(await rows('select status from public.workshop_invitations where email=$1 and workshop_id=$2', [otherEmail, wA])).toEqual([{ status: 'pending' }]);
+    expect(await rows("select 1 from public.audit_events where action='member_invited' and metadata->>'email'=$1", [otherEmail])).toHaveLength(1);
+  });
+  it('una invitación pendiente de una cuenta eliminada queda anonimizada y revocada', async () => {
+    await db.exec('reset role');
+    await db.query('delete from auth.users where id=$1', [pending]);
+    expect(await rows('select 1 from public.workshop_invitations where email=$1', [pendingEmail])).toHaveLength(0);
+    expect(await rows<{ status: string }>("select status from public.workshop_invitations where workshop_id=$1 and email like 'cuenta-eliminada-%' and status <> 'accepted'", [wA])).toEqual([{ status: 'revoked' }]);
+  });
+  it('baja de propietario con el taller abierto: se rechaza y no se anonimiza nada', async () => {
+    const before = await rows<{ n: number }>("select count(*)::int n from public.workshop_invitations where email like 'cuenta-eliminada-%'");
+    await db.exec('reset role');
+    await expect(db.query('delete from auth.users where id=$1', [ownerA])).rejects.toThrow('No se puede borrar la cuenta del propietario');
+    expect(await rows<{ n: number }>("select count(*)::int n from public.workshop_invitations where email like 'cuenta-eliminada-%'")).toEqual(before);
+    expect(await rows('select 1 from public.workshop_invitations where email=$1', [otherEmail])).toHaveLength(1);
+  });
+  it('cierre de taller: borra todo lo del taller; después la baja del propietario anonimiza lo que quede de su correo en otros talleres', async () => {
+    await db.exec('reset role');
+    await db.query('delete from public.workshops where id=$1', [wA]);
+    expect(await rows('select 1 from public.workshop_invitations where workshop_id=$1', [wA])).toHaveLength(0);
+    expect(await rows('select 1 from public.audit_events where workshop_id=$1', [wA])).toHaveLength(0);
+    // Once A's workshop is closed, B can invite A's address.
+    await asUser(ownerB); await db.query('select public.invite_member($1,$2)', [wB, ownerAEmail]);
+    await db.exec('reset role');
+    await db.query('delete from auth.users where id=$1', [ownerA]);
+    expect(await rows('select 1 from public.workshop_invitations where email=$1', [ownerAEmail])).toHaveLength(0);
+    expect(await rows("select 1 from public.audit_events where metadata->>'email'=$1", [ownerAEmail])).toHaveLength(0);
+    expect(await rows("select status from public.workshop_invitations where workshop_id=$1 and email like 'cuenta-eliminada-%' and status='revoked'", [wB])).toHaveLength(1);
+  });
+  it('tras un cambio de correo, se anonimizan también la invitación aceptada y la auditoría de la dirección anterior', async () => {
+    const mover = '20200000-0000-4000-8000-000000000006', oldEmail = 'antes206@example.com', newEmail = 'despues206@example.com';
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2)', [mover, oldEmail]);
+    await asUser(ownerB);
+    const inv = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [wB, oldEmail])).rows[0].id;
+    await asUser(mover); await db.query('select public.accept_invitation($1)', [inv]);
+    await db.exec('reset role');
+    await db.query('update auth.users set email=$2 where id=$1', [mover, newEmail]);
+    await db.query('delete from auth.users where id=$1', [mover]);
+    const row = (await rows<{ email: string; status: string }>('select email, status from public.workshop_invitations where id=$1', [inv]))[0];
+    expect(row.email).toMatch(placeholder);
+    expect(row.status).toBe('accepted');
+    expect(await rows("select 1 from public.audit_events where metadata->>'email'=$1", [oldEmail])).toHaveLength(0);
+    expect(await rows("select metadata->>'email' email from public.audit_events where action='member_invited' and entity_id=$1", [inv])).toEqual([{ email: 'cuenta eliminada' }]);
+  });
+  it('si la dirección anterior pertenece hoy a otra cuenta, solo se anonimiza el historial de la cuenta borrada', async () => {
+    const first = '20200000-0000-4000-8000-000000000007', second = '20200000-0000-4000-8000-000000000008';
+    const shared = 'compartida207@example.com', moved = 'nueva207@example.com';
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2)', [first, shared]);
+    await asUser(ownerB);
+    const invFirst = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [wB, shared])).rows[0].id;
+    await asUser(first); await db.query('select public.accept_invitation($1)', [invFirst]);
+    // first changes its address; someone else signs up with the old one and gets a new (pending) invitation.
+    await db.exec('reset role');
+    await db.query('update auth.users set email=$2 where id=$1', [first, moved]);
+    await db.query('insert into auth.users(id,email) values($1,$2)', [second, shared]);
+    await asUser(ownerB);
+    const invSecond = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [wB, shared])).rows[0].id;
+    await db.exec('reset role');
+    await db.query('delete from auth.users where id=$1', [first]);
+    expect((await rows<{ email: string }>('select email from public.workshop_invitations where id=$1', [invFirst]))[0].email).toMatch(placeholder);
+    expect(await rows('select email, status from public.workshop_invitations where id=$1', [invSecond])).toEqual([{ email: shared, status: 'pending' }]);
+    expect(await rows("select metadata->>'email' email from public.audit_events where action='member_invited' and entity_id=$1", [invFirst])).toEqual([{ email: 'cuenta eliminada' }]);
+    expect(await rows("select metadata->>'email' email from public.audit_events where action='member_invited' and entity_id=$1", [invSecond])).toEqual([{ email: shared }]);
+  });
+  it('accept_invitation bloquea la cuenta antes que la invitación, en el mismo orden que el borrado', async () => {
+    const def = (await rows<{ d: string }>("select pg_get_functiondef('public.accept_invitation(uuid)'::regprocedure) d"))[0].d;
+    const accountLock = def.indexOf('from auth.users where id = auth.uid() for key share');
+    const invitationLock = def.indexOf('from public.workshop_invitations where id = p_invitation_id for update');
+    expect(accountLock).toBeGreaterThan(-1);
+    expect(invitationLock).toBeGreaterThan(accountLock);
+  });
+  it('aceptar con una cuenta que ya no existe termina sin tocar la invitación', async () => {
+    await asUser(ownerB);
+    const inv = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [wB, 'fantasma209@example.com'])).rows[0].id;
+    await asUser('20200000-0000-4000-8000-000000000009');
+    await expect(db.query('select public.accept_invitation($1)', [inv])).rejects.toThrow('Debes iniciar sesión');
+    expect(await rows('select status from public.workshop_invitations where id=$1', [inv])).toEqual([{ status: 'pending' }]);
+  });
+  it('una cuenta sin correo se borra sin errores', async () => {
+    const noEmail = '20200000-0000-4000-8000-000000000005';
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,null)', [noEmail]);
+    await db.query('delete from auth.users where id=$1', [noEmail]);
+    expect(await rows('select 1 from auth.users where id=$1', [noEmail])).toHaveLength(0);
+  });
+  it('la función es security definer sin permisos públicos y el trigger es BEFORE DELETE en auth.users', async () => {
+    const f = await rows<{ definer: boolean; anon: boolean; auth: boolean; config: string }>("select prosecdef definer, has_function_privilege('anon','public.anonymize_deleted_account()','execute') anon, has_function_privilege('authenticated','public.anonymize_deleted_account()','execute') auth, array_to_string(proconfig, ',') config from pg_proc where oid = 'public.anonymize_deleted_account()'::regprocedure");
+    expect(f).toEqual([{ definer: true, anon: false, auth: false, config: 'search_path=""' }]);
+    const t = await rows<{ timing: string; event: string }>("select action_timing timing, event_manipulation event from information_schema.triggers where event_object_schema='auth' and event_object_table='users' and trigger_name='anonymize_deleted_account'");
+    expect(t).toEqual([{ timing: 'BEFORE', event: 'DELETE' }]);
+  });
+});
