@@ -864,3 +864,58 @@ describe('migración 018: invitaciones solo con correo confirmado', () => {
     expect((await db.query<{ n: number }>("select count(*)::int n from pg_proc where proname in ('my_pending_invitation','accept_invitation','decline_invitation') and pronamespace='public'::regnamespace")).rows[0].n).toBe(3);
   });
 });
+
+describe('migración 019: borrado de cuentas con invitaciones', () => {
+  const owner = '10000000-0000-4000-8000-000000000190', ownerEmail = 'owner190@example.com';
+  const staff = '10000000-0000-4000-8000-000000000191', staffEmail = 'staff191@example.com';
+  const plain = '10000000-0000-4000-8000-000000000192';
+  let workshop: string, invitationId: string;
+  const one = async <T,>(sql: string, params: unknown[] = []) => { await db.exec('reset role'); return (await db.query<T>(sql, params)).rows[0]; };
+  beforeAll(async () => {
+    await db.exec('reset role');
+    await db.query('insert into auth.users(id,email) values($1,$2),($3,$4),($5,null)', [owner, ownerEmail, staff, staffEmail, plain]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller 019') id")).rows[0].id;
+    invitationId = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, staffEmail])).rows[0].id;
+    await asUser(staff);
+    await db.query('select public.accept_invitation($1)', [invitationId]);
+  });
+  it('las tres referencias a auth.users quedan en ON DELETE SET NULL e invited_by deja de ser obligatoria', async () => {
+    await db.exec('reset role');
+    const fks = (await db.query<{ col: string; rule: string }>(`select a.attname col, c.confdeltype rule from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+      where c.contype = 'f' and c.confrelid = 'auth.users'::regclass order by c.conrelid::regclass::text, a.attname`)).rows;
+    expect(fks).toEqual([{ col: 'accepted_by', rule: 'n' }, { col: 'invited_by', rule: 'n' }, { col: 'invited_by', rule: 'n' }, { col: 'user_id', rule: 'c' }]);
+    expect((await one<{ required: boolean }>("select attnotnull as required from pg_attribute where attrelid = 'public.workshop_invitations'::regclass and attname = 'invited_by'")).required).toBe(false);
+  });
+  it('una cuenta de staff que aceptó una invitación se puede borrar: pierde el acceso y la invitación queda como historial', async () => {
+    await db.exec('reset role');
+    await db.query('delete from auth.users where id=$1', [staff]);
+    expect((await db.query('select * from public.workshop_members where user_id=$1', [staff])).rows).toHaveLength(0);
+    const inv = await one<{ status: string; accepted_by: string | null; invited_by: string | null }>('select status, accepted_by, invited_by from public.workshop_invitations where id=$1', [invitationId]);
+    expect(inv).toEqual({ status: 'accepted', accepted_by: null, invited_by: owner });
+  });
+  it('una cuenta sin taller se borra sin problemas', async () => {
+    await db.exec('reset role');
+    await db.query('delete from auth.users where id=$1', [plain]);
+    expect((await db.query('select 1 from auth.users where id=$1', [plain])).rows).toHaveLength(0);
+  });
+  it('la cuenta del propietario no se puede borrar mientras su taller exista, y el taller sigue intacto', async () => {
+    await db.exec('reset role');
+    await expect(db.query('delete from auth.users where id=$1', [owner])).rejects.toThrow('No se puede borrar la cuenta del propietario');
+    expect((await db.query('select 1 from auth.users where id=$1', [owner])).rows).toHaveLength(1);
+    expect((await one<{ role: string }>('select role from public.workshop_members where user_id=$1', [owner])).role).toBe('owner');
+  });
+  it('tras borrar el taller (todo en cascada), la cuenta del propietario sí se puede borrar', async () => {
+    await db.exec('reset role');
+    await db.query('delete from public.workshops where id=$1', [workshop]);
+    expect((await db.query('select 1 from public.workshop_invitations where workshop_id=$1', [workshop])).rows).toHaveLength(0);
+    await db.query('delete from auth.users where id=$1', [owner]);
+    expect((await db.query('select 1 from auth.users where id=$1', [owner])).rows).toHaveLength(0);
+  });
+  it('la función del trigger es security definer, no la puede ejecutar anon ni authenticated, y el trigger está en auth.users', async () => {
+    await db.exec('reset role');
+    const f = await one<{ definer: boolean; anon: boolean; auth: boolean; config: string }>("select prosecdef definer, has_function_privilege('anon','public.prevent_owner_account_deletion()','execute') anon, has_function_privilege('authenticated','public.prevent_owner_account_deletion()','execute') auth, array_to_string(proconfig, ',') config from pg_proc where oid = 'public.prevent_owner_account_deletion()'::regprocedure");
+    expect(f).toEqual({ definer: true, anon: false, auth: false, config: 'search_path=""' });
+    expect((await db.query("select 1 from pg_trigger where tgrelid = 'auth.users'::regclass and tgname = 'prevent_owner_account_deletion' and not tgisinternal")).rows).toHaveLength(1);
+  });
+});
