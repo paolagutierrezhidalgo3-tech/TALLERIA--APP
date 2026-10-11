@@ -21,7 +21,7 @@ async function execute(workshop: string, command: unknown) { await db.query('sel
 function intake(phone = '611222333', plate = '1234BCD') { return { type: 'intake', id: crypto.randomUUID(), data: { name: 'Persona Prueba', phone, brand: 'SEAT', model: 'León', plate, reason: 'Revisión de mantenimiento', availability: 'Mañanas', notes: '' }, messages: [{ role: 'user', content: 'Quiero una revisión' }] }; }
 beforeAll(async () => {
   await db.exec(`create role anon; create role authenticated; create role service_role;
-    create schema auth; create table auth.users(id uuid primary key, email text unique default (gen_random_uuid()::text || '@example.invalid'));
+    create schema auth; create table auth.users(id uuid primary key, email text unique default (gen_random_uuid()::text || '@example.invalid'), email_confirmed_at timestamptz default now());
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     grant usage on schema auth to authenticated, anon;
     insert into auth.users(id) values ('${userA}'),('${userB}'),('10000000-0000-4000-8000-000000000004');`);
@@ -799,5 +799,68 @@ describe('Aviso de solicitud nueva: claim_public_request_notification', () => {
     await db.exec('reset role; set role service_role;');
     const result = await db.query<{ claim_public_request_notification: string | null }>('select public.claim_public_request_notification($1)', [clientId]);
     expect(result.rows[0].claim_public_request_notification).toBe(workshopA);
+  });
+});
+
+describe('migración 018: invitaciones solo con correo confirmado', () => {
+  const owner = '10000000-0000-4000-8000-000000000180', ownerEmail = 'owner180@example.com';
+  const invitee = '10000000-0000-4000-8000-000000000181', inviteeEmail = 'invitee181@example.com';
+  const member = '10000000-0000-4000-8000-000000000182', memberEmail = 'member182@example.com';
+  let workshop: string, invitationId: string;
+  const status = async () => { await db.exec('reset role'); return (await db.query<{ status: string }>('select status from public.workshop_invitations where id=$1', [invitationId])).rows[0].status; };
+  beforeAll(async () => {
+    await db.exec('reset role');
+    // The invitee's account exists with that address but has never confirmed it.
+    await db.query('insert into auth.users(id,email) values($1,$2),($3,$4)', [owner, ownerEmail, member, memberEmail]);
+    await db.query('insert into auth.users(id,email,email_confirmed_at) values($1,$2,null)', [invitee, inviteeEmail]);
+    await asUser(owner);
+    workshop = (await db.query<{ id: string }>("select public.create_workshop('Taller 018') id")).rows[0].id;
+    invitationId = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, inviteeEmail])).rows[0].id;
+  });
+  it('sin confirmar no ve la invitación (ni el taller ni quién invita) y tampoco recibe null, que llevaría a crear un taller', async () => {
+    await asUser(invitee);
+    await expect(db.query('select public.my_pending_invitation()')).rejects.toThrow('Confirma tu correo electrónico');
+  });
+  it('sin confirmar no puede aceptarla ni rechazarla, y la invitación sigue pendiente', async () => {
+    await asUser(invitee);
+    await expect(db.query('select public.accept_invitation($1)', [invitationId])).rejects.toThrow('Confirma tu correo electrónico antes de aceptar');
+    await asUser(invitee);
+    await expect(db.query('select public.decline_invitation($1)', [invitationId])).rejects.toThrow('Confirma tu correo electrónico');
+    expect(await status()).toBe('pending');
+    expect((await db.query('select * from public.workshop_members where user_id=$1', [invitee])).rows).toHaveLength(0);
+  });
+  it('el error de confirmación usa P0001, que la app muestra tal cual', async () => {
+    await asUser(invitee);
+    const err = await db.query('select public.accept_invitation($1)', [invitationId]).then(() => null, (e: { code?: string }) => e);
+    expect(err?.code).toBe('P0001');
+  });
+  it('una vez confirmado el correo, ve la invitación y la acepta como staff', async () => {
+    await db.exec('reset role');
+    await db.query('update auth.users set email_confirmed_at = now() where id=$1', [invitee]);
+    await asUser(invitee);
+    const pending = (await db.query<{ p: { id: string; workshop_name: string } }>('select public.my_pending_invitation() p')).rows[0].p;
+    expect(pending.id).toBe(invitationId);
+    expect(pending.workshop_name).toBe('Taller 018');
+    await asUser(invitee);
+    expect((await db.query<{ id: string }>('select public.accept_invitation($1) id', [invitationId])).rows[0].id).toBe(workshop);
+    await db.exec('reset role');
+    expect((await db.query<{ role: string }>('select role from public.workshop_members where workshop_id=$1 and user_id=$2', [workshop, invitee])).rows[0].role).toBe('staff');
+    expect(await status()).toBe('accepted');
+  });
+  it('rechazar sigue funcionando para un correo confirmado', async () => {
+    await asUser(owner);
+    const second = (await db.query<{ id: string }>('select public.invite_member($1,$2) id', [workshop, memberEmail])).rows[0].id;
+    await asUser(member);
+    await db.query('select public.decline_invitation($1)', [second]);
+    await db.exec('reset role');
+    expect((await db.query<{ status: string }>('select status from public.workshop_invitations where id=$1', [second])).rows[0].status).toBe('revoked');
+  });
+  it('mantiene las firmas y los permisos: anon no puede ejecutarlas y authenticated sí', async () => {
+    await db.exec('reset role');
+    for (const fn of ['public.my_pending_invitation()', 'public.accept_invitation(uuid)', 'public.decline_invitation(uuid)']) {
+      const r = (await db.query<{ anon: boolean; auth: boolean; definer: boolean }>(`select has_function_privilege('anon','${fn}','execute') anon, has_function_privilege('authenticated','${fn}','execute') auth, (select prosecdef from pg_proc where oid='${fn}'::regprocedure) definer`)).rows[0];
+      expect(r).toEqual({ anon: false, auth: true, definer: true });
+    }
+    expect((await db.query<{ n: number }>("select count(*)::int n from pg_proc where proname in ('my_pending_invitation','accept_invitation','decline_invitation') and pronamespace='public'::regnamespace")).rows[0].n).toBe(3);
   });
 });
