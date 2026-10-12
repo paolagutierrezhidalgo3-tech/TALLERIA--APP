@@ -15,11 +15,21 @@
 // folder must be kept private. Nothing here ever goes to GitHub.
 //
 // Usage:
-//   node scripts/backup-database.mjs <destination-folder>      backup + verify
+//   node scripts/backup-database.mjs --init-key                once: create the
+//                                                             encryption key
+//   node scripts/backup-database.mjs --export-key              show the key for
+//                                                             the password manager
+//                                                             (interactive terminal)
+//   node scripts/backup-database.mjs <destination-folder>      backup + verify +
+//                                                             encrypt
 //   node scripts/backup-database.mjs --verify <backup-folder>  verify again
+//   node scripts/backup-database.mjs --decrypt <backup-folder> --out <folder>
+//                                                             decrypt to restore
 // Options: --source-env NAME (variable with the connection string; default
-// TALLERIA_DB_URL), --keep-container (leave the restore container for
-// inspection; it is removed otherwise).
+// TALLERIA_DB_URL), --key-file PATH (DPAPI-protected key; default
+// %USERPROFILE%\TALLERIA-COPIAS-PRIVADO\clave\backup-key.dpapi), --key-env NAME
+// (raw key from the password manager in a variable, e.g. on another computer),
+// --keep-container (leave the restore container for inspection).
 //
 // Requires Docker running. Files written to <destination>/talleria-<UTC>/:
 //   roles.sql, schema.sql, data.sql   official Supabase CLI dump
@@ -38,13 +48,15 @@
 //                                     functions (not in schema.sql, which
 //                                     leaves out the auth schema)
 //   manifest.json                     sha256 of every file and fingerprints
+// After the restore test passes, every .sql file is encrypted to <name>.enc
+// and the plaintext is deleted; manifest.json (hashes only) stays readable.
 // Restore order (see docs/copia-seguridad.md): roles, [auth-pre, auth-post
 // only outside Supabase], schema, custom-auth-triggers, acl, then data with
 // session_replication_role = replica.
 import { spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, openSync, closeSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -60,7 +72,13 @@ const args = process.argv.slice(2);
 const opt = name => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : undefined; };
 const flag = name => { const i = args.indexOf(name); if (i >= 0) args.splice(i, 1); return i >= 0; };
 const verifyDir = opt('--verify');
+const decryptDir = opt('--decrypt');
+const outDir = opt('--out');
 const sourceEnv = opt('--source-env') ?? 'TALLERIA_DB_URL';
+const keyFile = opt('--key-file') ?? join(homedir(), 'TALLERIA-COPIAS-PRIVADO', 'clave', 'backup-key.dpapi');
+const keyEnv = opt('--key-env');
+const initKey = flag('--init-key');
+const exportKey = flag('--export-key');
 const keepContainer = flag('--keep-container');
 const destination = args[0];
 
@@ -89,6 +107,105 @@ function checkOutsideRepoAndOneDrive(dir) {
     if (od && inside(physical(od), abs)) fail('La carpeta de destino está dentro de OneDrive: elige una carpeta que no se sincronice.');
   }
   return abs;
+}
+
+// ---- encryption ----
+// Every backup file is encrypted with AES-256-GCM (its name authenticated, so
+// files cannot be swapped). The 32-byte key is random and stored protected
+// with Windows DPAPI: only the same Windows user on this computer can open it,
+// so backups run unattended and the key is never shown. A copy of the raw key
+// for disaster recovery is shown only by --export-key, in an interactive
+// terminal; elsewhere --key-env NAME reads that copy from a variable.
+const DPAPI_ENTROPY = 'TALLERIA-backup-key-v1';
+function dpapi(op, inputB64) {
+  if (process.platform !== 'win32') fail('La clave protegida con DPAPI solo funciona en Windows; en otro equipo usa --key-env con la copia de la clave.');
+  const ps = `Add-Type -AssemblyName System.Security; $in = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()); $e = [Text.Encoding]::UTF8.GetBytes('${DPAPI_ENTROPY}'); $out = [Security.Cryptography.ProtectedData]::${op}($in, $e, 'CurrentUser'); [Console]::Out.Write([Convert]::ToBase64String($out))`;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { input: inputB64, encoding: 'utf8' });
+  if (r.status !== 0) fail(`No se pudo ${op === 'Protect' ? 'proteger' : 'abrir'} la clave con DPAPI (solo puede abrirla el mismo usuario de Windows que la creó).`);
+  return r.stdout.trim();
+}
+function loadKey() {
+  let key;
+  if (keyEnv) {
+    const v = process.env[keyEnv];
+    if (!v) fail(`Falta la variable de entorno ${keyEnv}.`);
+    key = Buffer.from(v.trim(), 'base64');
+  } else {
+    if (!existsSync(keyFile)) fail(`No existe la clave de cifrado (${keyFile}). Créala con --init-key.`);
+    key = Buffer.from(dpapi('Unprotect', readFileSync(keyFile, 'utf8').trim()), 'base64');
+  }
+  if (key.length !== 32) fail('La clave de cifrado no es válida.');
+  return key;
+}
+// Public identifier of a key (not the key): tells which key a backup needs.
+const keyId = key => sha256(Buffer.concat([Buffer.from('talleria-key-id:'), key])).slice(0, 16);
+const MAGIC = Buffer.from('TBK1');
+function encrypt(key, name, plain) {
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', key, iv);
+  c.setAAD(Buffer.from(name));
+  const body = Buffer.concat([c.update(plain), c.final()]);
+  return Buffer.concat([MAGIC, iv, c.getAuthTag(), body]);
+}
+function decrypt(key, name, blob) {
+  if (blob.length < 32 || !blob.subarray(0, 4).equals(MAGIC)) fail(`${name}: no es un archivo cifrado de copia.`);
+  const d = createDecipheriv('aes-256-gcm', key, blob.subarray(4, 16));
+  d.setAAD(Buffer.from(name));
+  d.setAuthTag(blob.subarray(16, 32));
+  try { return Buffer.concat([d.update(blob.subarray(32)), d.final()]); } catch { fail(`${name}: no se puede descifrar (clave distinta o archivo alterado).`); }
+}
+
+function createKey() {
+  const exists = () => fail(`Ya existe una clave en ${keyFile}: no se sobrescribe (las copias cifradas con ella dejarían de poder abrirse).`);
+  if (existsSync(keyFile)) exists();
+  mkdirSync(dirname(keyFile), { recursive: true });
+  const key = randomBytes(32);
+  const sealed = dpapi('Protect', key.toString('base64')) + '\n';
+  // 'wx': exclusive creation, so two runs at once can never replace a key.
+  try { writeFileSync(keyFile, sealed, { flag: 'wx' }); } catch (e) { if (e.code === 'EEXIST') exists(); throw e; }
+  if (!loadKey().equals(key)) fail('La clave guardada no se pudo volver a abrir.');
+  console.log(`✔ Clave de cifrado creada y protegida con DPAPI en ${keyFile} (identificador ${keyId(key)}).`);
+  console.log('  Guarda una copia para emergencias en tu gestor de contraseñas con --export-key, desde una terminal tuya.');
+}
+function showKey() {
+  if (!process.stdout.isTTY || !process.stdin.isTTY) fail('Por seguridad, --export-key solo muestra la clave en una terminal interactiva abierta por ti (no en herramientas automáticas ni redirigida a un archivo).');
+  const key = loadKey();
+  console.log(`Identificador: ${keyId(key)}\nClave (cópiala en tu gestor de contraseñas y no la compartas):\n${key.toString('base64')}`);
+}
+
+// Encrypts the verified plaintext files, checks each one decrypts back to the
+// manifest hash, then deletes the plaintext.
+function encryptBackup(dir, key) {
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  for (const [f, meta] of Object.entries(manifest.archivos)) {
+    const plain = readFileSync(join(dir, f));
+    if (sha256(plain) !== meta.sha256) fail(`${f}: cambió antes de cifrarlo.`);
+    const blob = encrypt(key, f, plain);
+    writeFileSync(join(dir, f + '.enc'), blob);
+    if (sha256(decrypt(key, f, readFileSync(join(dir, f + '.enc')))) !== meta.sha256) fail(`${f}: el archivo cifrado no se descifra igual.`);
+    meta.cifrado = { archivo: f + '.enc', bytes: blob.length, sha256: sha256(blob) };
+  }
+  manifest.cifrado = { algoritmo: 'AES-256-GCM', clave_id: keyId(key) };
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest, null, 1));
+  for (const f of Object.keys(manifest.archivos)) rmSync(join(dir, f));
+}
+
+// Decrypts an encrypted backup into target (files plus manifest.json).
+function decryptBackup(dir, target, key) {
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  if (!manifest.cifrado) fail('Esta copia no está cifrada.');
+  if (manifest.cifrado.clave_id !== keyId(key)) fail(`Esta copia se cifró con otra clave (identificador ${manifest.cifrado.clave_id}).`);
+  mkdirSync(target, { recursive: true });
+  for (const [f, meta] of Object.entries(manifest.archivos)) {
+    const blob = readFileSync(join(dir, meta.cifrado.archivo));
+    if (sha256(blob) !== meta.cifrado.sha256) fail(`${meta.cifrado.archivo}: el archivo cifrado falta o no coincide con el manifiesto.`);
+    writeFileSync(join(target, f), decrypt(key, f, blob));
+    delete meta.cifrado;
+  }
+  // The decrypted folder is a plain backup: its manifest says so, so it can be
+  // verified again (--verify) before restoring.
+  delete manifest.cifrado;
+  writeFileSync(join(target, 'manifest.json'), JSON.stringify(manifest, null, 1));
 }
 
 function docker(argv, options = {}) {
@@ -234,7 +351,8 @@ async function readSource() {
 }
 
 // ---- restore test in a throwaway container ----
-function restoreAndFingerprint(dir, manifest) {
+const LOG = 'restauracion-errores.log';
+function restoreAndFingerprint(dir, manifest, logDir) {
   const name = 'talleria-restore-' + randomBytes(4).toString('hex');
   const password = randomBytes(18).toString('hex');
   const run = docker(['run', '-d', '--name', name, '-e', 'POSTGRES_PASSWORD', '-v', `${dir}:/backup:ro`, IMAGE], { env: { ...process.env, POSTGRES_PASSWORD: password } });
@@ -249,12 +367,13 @@ function restoreAndFingerprint(dir, manifest) {
     }
     if (!ready) fail('El contenedor de prueba no llegó a estar listo.');
     // psql diagnostics can quote row values (e.g. a COPY line it rejected):
-    // they go to a private log next to the backup, never to the console.
-    const log = join(dir, 'restauracion-errores.log');
+    // they go to a private log next to the backup (encrypted afterwards),
+    // never to the console.
+    const log = join(logDir, LOG);
     const step = (label, r) => {
       if (r.status === 0) return r;
       writeFileSync(log, `${new Date().toISOString()} ${label}\n${r.stderr || ''}\n`, { flag: 'a' });
-      fail(`${label}: falló (código ${r.status}). Diagnóstico completo, que puede contener datos, en ${log}`);
+      fail(`${label}: falló (código ${r.status}). El diagnóstico completo, que puede contener datos, se guarda en la carpeta de la copia (cifrado si la copia lo está; se abre con --decrypt).`);
     };
     // The image ships a minimal auth schema; replace it with the backed-up one.
     step('Preparación del contenedor', psql(['-c', 'drop schema if exists auth cascade']));
@@ -273,7 +392,7 @@ function restoreAndFingerprint(dir, manifest) {
 // JSON with sorted keys, so objects compare by content.
 const stable = v => JSON.stringify(v, (_, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
 const COMPARED = ['funciones', 'permisos', 'permisos_columnas', 'rls', 'permisos_esquemas', 'politicas', 'estructura', 'secuencias', 'estado_secuencias'];
-function verify(dir) {
+function verify(dir, logDir = dir) {
   const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
   let ok = true;
   for (const [f, meta] of Object.entries(manifest.archivos)) {
@@ -282,7 +401,7 @@ function verify(dir) {
   }
   if (!ok) fail('La copia está incompleta o modificada.');
   console.log('✔ Archivos íntegros (SHA-256 iguales al manifiesto)');
-  const restored = restoreAndFingerprint(dir, manifest);
+  const restored = restoreAndFingerprint(dir, manifest, logDir);
   const src = manifest.huellas;
   for (const [t, v] of Object.entries(src.tablas)) {
     const w = restored.tablas?.[t];
@@ -296,29 +415,95 @@ function verify(dir) {
   console.log(`✔ Restauración de prueba idéntica al origen: ${n} tablas (${rows} filas); estructura, secuencias, funciones, permisos, RLS, políticas y triggers`);
 }
 
+// The restore diagnostic may quote rows: keep it only encrypted. The
+// plaintext log is always removed; the encrypted copy is kept only if it was
+// written and decrypts back to the same bytes.
+function sealLog(dir, key) {
+  const f = join(dir, LOG);
+  if (!existsSync(f)) return;
+  const name = `restauracion-errores-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}.log`;
+  const out = join(dir, name + '.enc');
+  try {
+    const plain = readFileSync(f);
+    writeFileSync(out, encrypt(key, name, plain));
+    if (!decrypt(key, name, readFileSync(out)).equals(plain)) throw new Error('diagnóstico cifrado distinto');
+  } catch {
+    rmSync(out, { force: true });
+    console.error('✘ No se pudo guardar cifrado el diagnóstico de la restauración; se ha borrado.');
+  } finally {
+    rmSync(f, { force: true });
+  }
+}
+
+// Verifies a backup; an encrypted one is decrypted into a temporary folder
+// inside the (access-restricted) backup folder, removed afterwards.
+function verifyBackup(dir) {
+  // Verifying writes decrypted files and a diagnostic into the backup folder:
+  // never inside the repository or OneDrive, even if a backup was moved there.
+  checkOutsideRepoAndOneDrive(dir);
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  if (!manifest.cifrado) return verify(dir);
+  const key = loadKey();
+  const tmp = join(dir, '.descifrado-' + randomBytes(4).toString('hex'));
+  try {
+    decryptBackup(dir, tmp, key);
+    console.log(`✔ Archivos cifrados íntegros y descifrados con la clave ${keyId(key)}`);
+    verify(tmp, dir);
+  } finally {
+    // Independent steps: a failure removing the temporary folder must not
+    // stop the diagnostic from being sealed.
+    try { rmSync(tmp, { recursive: true, force: true }); } catch (e) {
+      console.error(`✘ No se pudo borrar la carpeta temporal descifrada ${tmp}: bórrala a mano (${e.code ?? e.message}).`);
+    } finally { sealLog(dir, key); }
+  }
+}
+
+function decryptCommand(src, out) {
+  if (!out) fail('Indica --out <carpeta> (fuera del repositorio y de OneDrive).');
+  const target = checkOutsideRepoAndOneDrive(out);
+  if (existsSync(target)) fail('La carpeta de salida ya existe.');
+  const key = loadKey();
+  const from = resolve(src);
+  if (from.endsWith('.enc') && existsSync(from) && !existsSync(join(from, 'manifest.json'))) {
+    // A single sealed file, e.g. an encrypted restore diagnostic.
+    const name = basename(from).slice(0, -4);
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, name), decrypt(key, name, readFileSync(from)));
+  } else decryptBackup(from, target, key);
+  console.log(`✔ Descifrado en ${target}. Contiene datos personales: bórrala en cuanto termines.`);
+}
+
 async function backup() {
   if (!destination) fail('Uso: node scripts/backup-database.mjs <carpeta-destino>   |   --verify <carpeta-de-copia>');
   if (docker(['info', '--format', '{{.ServerVersion}}']).status !== 0) fail('Docker no está en marcha.');
   const base = checkOutsideRepoAndOneDrive(destination);
   loadSource();
+  // Unencrypted backups are not allowed: without a usable key, stop before
+  // anything is dumped.
+  const key = loadKey();
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
   const dir = join(base, `talleria-${stamp}`);
   if (existsSync(dir)) fail('La carpeta de la copia ya existe.');
   mkdirSync(dir, { recursive: true });
-  let verifying = false;
+  let phase = 'volcado';
   try {
-    await backupInto(dir, () => { verifying = true; });
+    await backupInto(dir, key, p => { phase = p; });
   } catch (e) {
-    // A backup that failed before its restore test is incomplete but may hold
-    // personal data: remove the folder this run created. If the restore test
-    // itself failed, keep the files for diagnosis, clearly marked.
-    if (!verifying) rmSync(dir, { recursive: true, force: true });
-    else writeFileSync(join(dir, 'COPIA-NO-VALIDA.txt'), 'La restauración de prueba de esta copia falló: no la uses para restaurar. Bórrala cuando ya no haga falta para diagnosticar.\n');
+    // Never leave plaintext personal data behind. If the restore test failed,
+    // keep only its diagnostic, encrypted, and mark the folder; otherwise
+    // remove the folder this run created.
+    if (phase === 'verificación') {
+      try { sealLog(dir, key); } finally {
+        // Whatever happened while sealing, no plaintext file survives.
+        for (const f of readdirSync(dir)) if (!f.endsWith('.enc')) rmSync(join(dir, f), { recursive: true, force: true });
+        writeFileSync(join(dir, 'COPIA-NO-VALIDA.txt'), 'La restauración de prueba de esta copia falló y sus archivos se han borrado. Si se pudo guardar, queda solo el diagnóstico, cifrado (descífralo con --decrypt <archivo.enc> --out <carpeta>).\n');
+      }
+    } else rmSync(dir, { recursive: true, force: true });
     throw e;
   }
 }
 
-async function backupInto(dir, startVerifying) {
+async function backupInto(dir, key, setPhase) {
   const bin = supabaseCli();
   // The dumps run on separate connections. Reading the fingerprints before
   // and after them, and refusing the backup if they differ, detects any
@@ -355,13 +540,19 @@ async function backupInto(dir, startVerifying) {
   const rows = Object.values(fp.tablas).reduce((a, v) => a + Number(v.filas), 0);
   console.log(`✔ Copia creada: ${files.length} archivos, ${Object.keys(fp.tablas).length} tablas, ${rows} filas, ${fp.triggers_auth_users.length} triggers en auth.users`);
   console.log('Comprobando que se puede restaurar…');
-  startVerifying();
+  setPhase('verificación');
   verify(dir);
+  setPhase('cifrado');
+  encryptBackup(dir, key);
+  console.log(`✔ Copia cifrada (AES-256-GCM, clave ${keyId(key)}); los archivos sin cifrar se han borrado`);
   console.log(`Carpeta de la copia: ${dir}`);
 }
 
 try {
-  if (verifyDir) verify(resolve(verifyDir));
+  if (initKey) createKey();
+  else if (exportKey) showKey();
+  else if (decryptDir) decryptCommand(decryptDir, outDir);
+  else if (verifyDir) verifyBackup(resolve(verifyDir));
   else await backup();
 } catch (e) {
   console.error('✘ ' + redact(e instanceof Stop ? e.message : (e?.stack ?? e)));
