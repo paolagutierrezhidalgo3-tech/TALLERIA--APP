@@ -1996,3 +1996,26 @@ Despliegue: no aplica
 Bloqueos o limitaciones: ninguno salvo las decisiones
 Próximo paso exacto: a decisión de la usuaria -- commit; proteger o no la copia de las 08:09; hora y espejo; `powershell -ExecutionPolicy Bypass -File .\scripts\register-backup-task.ps1 -Registrar`
 ```
+
+```text
+Fecha: 12 de octubre de 2026
+Rama y HEAD comprobados: main, HEAD `4f5a1a8` (copias diarias automáticas; revisado sin secretos ni copias; CI y Vercel correctos), igual a `origin/main`
+Bloque actual y alcance: activación de las copias diarias (autorizada por la usuaria); sin copia real nueva; OneDrive pendiente; producción sin tocar
+Estado: activado (tarea diaria registrada; primera ejecución automática hoy a las 21:00)
+Hecho en esta sesión: (1) Commit y push de `scripts/backup-database.mjs`, `scripts/register-backup-task.ps1`, `docs/copia-seguridad.md` y el plan. (2) Copia `talleria-20261012T080929Z` protegida con `CONSERVAR.txt` (primera copia real, anterior a 019 y 020); simulación de rotación: 2 conservadas, 0 se borrarían. (3) Tarea de Windows "TALLERIA - copia de seguridad diaria" registrada sin permisos de administrador: diaria a las 21:00, `node.exe "...\scripts\backup-database.mjs" --daily` en la carpeta del repositorio, usuario Antropica, solo con sesión iniciada (Interactive), sin privilegios elevados (Limited), se ejecuta al encender si se perdió, con batería, límite 1 h, sin instancias simultáneas; estado Ready, próxima ejecución 12/10/2026 21:00, nunca ejecutada (no se lanzó ninguna copia nueva). (4) Espejo en OneDrive: pendiente (sin `config.json`).
+Decisiones confirmadas: hora 21:00; proteger la copia de las 08:09; OneDrive más adelante
+Archivos principales: `TALLERIA_PLAN_MAESTRO_FINAL.md` (esta entrada, sin commit)
+Pendientes concretos y hallazgos menores: tras la primera ejecución (hoy 21:00), comprobar con `--status` y el registro `registro\copias.log`; la rotación conservará la copia nueva y la protegida, y retirará `talleria-20261012T090408Z` (misma fecha, no protegida); conectar el espejo cuando se decida; aplicar 019 y 020 con autorización expresa
+Migraciones preparadas (identificador y finalidad): 019 y 020 en `main`, solo en TEST
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no dada
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna nueva
+Tests: sin cambios de código (505 pasados y 3 omitidos)
+Typecheck / Lint / Build: CI de `4f5a1a8` correcto
+Pruebas manuales: ninguna
+Revisión de Codex: no aplica (configuración, sin cambios de código)
+Commit de cierre confirmado: `4f5a1a8`; esta entrada, sin commit
+Push: `4f5a1a8`
+Despliegue: Vercel correcto
+Bloqueos o limitaciones: la copia diaria necesita la sesión de Windows iniciada (Docker Desktop y la clave DPAPI)
+Próximo paso exacto: revisar el resultado de la copia de las 21:00; después, decidir OneDrive y las migraciones 019 y 020
+```
