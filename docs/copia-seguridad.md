@@ -95,10 +95,36 @@ Después: comprobar con consultas de lectura que recuentos, permisos y triggers 
 
 **C. Sobre el mismo proyecto de producción**: no se recomienda sin analizar antes qué se ha perdido; implicaría borrar datos actuales.
 
-## 7. Cuándo hacerla
+## 7. Cuándo hacerla: copias automáticas diarias
 
-- Antes de cada migración que se aplique en producción (empezando por la 019 y la 020).
-- Periódicamente (frecuencia pendiente de decidir).
+- Antes de cada migración que se aplique en producción (empezando por la 019 y la 020), además de la diaria.
+- **Una copia diaria automática** con `node scripts/backup-database.mjs --daily`, programada con el Programador de tareas de Windows (preparado, sin activar; ver más abajo).
+
+**Qué hace `--daily`**, en este orden: comprueba si la última copia válida tiene más de 48 horas (avisa de que faltan copias); arranca Docker Desktop si no está en marcha (espera hasta 4 minutos); hace la copia (con bloqueo para que no haya dos a la vez y limpieza previa de restos); la verifica y la cifra; aplica la rotación; si hay espejo configurado, duplica la copia cifrada y rota el espejo; y lo anota en el registro.
+
+**Conservación (7 diarias y 4 semanales)**: se conserva la última copia válida de cada uno de los 7 días más recientes que tengan copia, más la última copia válida de cada una de las 4 semanas más recientes (semanas ISO) que tengan copia. Siempre se conserva la copia válida más reciente. Las copias fallidas o incompletas se guardan 7 días para diagnóstico y después se borran. Nunca se borra nada si no hay ninguna copia válida, nunca se toca una carpeta que no tenga el nombre de una copia (`talleria-AAAAMMDDTHHMMSSZ`) y **nunca se borra una copia cuya carpeta contenga un archivo `CONSERVAR.txt`** (útil para la copia de antes de una migración). Simulación sin borrar nada: `node scripts/backup-database.mjs --prune <carpeta> --dry-run`.
+
+**Avisos**: si la copia diaria falla, o si falta alguna copia (la última válida tiene más de 48 horas), aparece una notificación de Windows y queda anotado en `%USERPROFILE%\TALLERIA-COPIAS-PRIVADO\registro\copias.log` (solo líneas de estado, nunca datos, claves ni la cadena de conexión). Probar los avisos: `--notify-test`. Ver el estado de las copias: `--status`.
+
+**Limpieza de restos**: antes de cada copia, y con `--sweep <carpeta>`, primero se detienen los procesos y contenedores de volcado que hubieran quedado vivos (Windows no termina los procesos hijos al forzar el cierre del principal): los de la CLI fijada, nuestros contenedores etiquetados de procesos que ya no existen y los contenedores de volcado de la CLI que vuelcan exactamente esta base de datos (mismas cuatro variables de conexión), nunca un volcado o un servidor ajenos; si no se puede comprobar que se han detenido, la copia no continúa y se avisa. Después se borran los archivos en claro y las carpetas temporales que hubiera dejado una copia interrumpida (también por un cierre forzado o un apagón, cuando no pudo actuar la limpieza de emergencia), se eliminan las carpetas de copias que no llegaron a completarse (o se marcan con `COPIA-NO-VALIDA.txt` si tienen algún archivo cifrado) y se borran los contenedores de restauración abandonados. Un único bloqueo del sistema operativo (una tubería con nombre de Windows) impide que se ejecuten a la vez dos operaciones que vuelcan, restauran, rotan o limpian (copia, copia diaria, `--verify`, `--sweep`, `--prune`, `--mirror`); Windows lo libera solo cuando el proceso termina de cualquier forma (también un cierre forzado o un apagón), así que nunca queda un bloqueo abandonado. Los contenedores de restauración llevan una etiqueta con el proceso que los creó: la limpieza solo borra los de procesos que ya no existen. Los restos junto a una copia íntegra no la invalidan: se limpian y la copia conserva su lugar en la rotación.
+
+**Segunda copia en la nube (preparada, sin conectar)**: si en `%USERPROFILE%\TALLERIA-COPIAS-PRIVADO\config.json` se indica `"espejo": "<carpeta>"`, cada copia válida se duplica allí (solo los archivos cifrados `.enc`, `manifest.json` y, si existe, `CONSERVAR.txt`; nunca datos en claro) comprobando cada archivo por su huella, y el espejo sigue la misma rotación (las protecciones `CONSERVAR.txt` de las copias locales se copian al espejo antes de rotarlo). La carpeta espejo puede ser una carpeta sincronizada con un servicio en la nube (OneDrive, Google Drive…) o un disco externo: las copias van cifradas y la clave no está en ellas. Ejemplo de `config.json`:
+
+```
+{
+  "copias": "C:\\Users\\<usuario>\\TALLERIA-COPIAS-PRIVADO\\copias",
+  "espejo": "C:\\Users\\<usuario>\\OneDrive\\TALLERIA-copias-cifradas"
+}
+```
+
+**Activación** (cuando se decida):
+
+```
+powershell -ExecutionPolicy Bypass -File .\scripts\register-backup-task.ps1              # muestra lo que haría
+powershell -ExecutionPolicy Bypass -File .\scripts\register-backup-task.ps1 -Registrar   # registra la tarea (21:00)
+```
+
+La tarea se ejecuta con tu usuario y solo con tu sesión iniciada (Docker Desktop y la clave protegida lo necesitan). Si el ordenador está apagado a esa hora, se ejecuta en cuanto sea posible. `-Quitar` la elimina.
 
 ## 8. Limitaciones conocidas
 

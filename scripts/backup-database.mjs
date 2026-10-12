@@ -30,6 +30,17 @@
 //   node scripts/backup-database.mjs --verify <backup-folder>  verify again
 //   node scripts/backup-database.mjs --decrypt <backup-folder> --out <folder>
 //                                                             decrypt to restore
+//   node scripts/backup-database.mjs --daily                   scheduled job: start
+//                                                             Docker, sweep, back up,
+//                                                             rotate, mirror, alert
+//   node scripts/backup-database.mjs --prune <folder> [--dry-run]
+//                                                             7 daily + 4 weekly
+//   node scripts/backup-database.mjs --sweep <folder>          remove leftovers of an
+//                                                             interrupted run
+//   node scripts/backup-database.mjs --mirror <mirror> <backup-folder>
+//   node scripts/backup-database.mjs --status | --notify-test
+// Daily settings in %USERPROFILE%\TALLERIA-COPIAS-PRIVADO\config.json
+// ({ "copias", "espejo", "registro" }; --config PATH for another file).
 // Options: --source-env NAME (variable with the connection string; default
 // TALLERIA_DB_URL), --key-file PATH (DPAPI-protected key; default
 // %USERPROFILE%\TALLERIA-COPIAS-PRIVADO\clave\backup-key.dpapi), --key-env NAME
@@ -61,12 +72,13 @@
 // Restore order (see docs/copia-seguridad.md): roles, [platform-pre,
 // platform-post only outside Supabase], schema, custom-triggers, acl, then data with
 // session_replication_role = replica.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, openSync, closeSync, realpathSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import net from 'node:net';
 import pg from 'pg';
 
 const CLI_VERSION = '2.117.0';
@@ -91,6 +103,15 @@ const checkKeyCopyFlag = flag('--check-key-copy');
 const checkKeyFlag = flag('--check-key');
 const clipboardSeconds = opt('--clipboard-seconds');
 const keepContainer = flag('--keep-container');
+const dailyFlag = flag('--daily');
+const pruneDir = opt('--prune');
+const sweepDir = opt('--sweep');
+const mirrorDir = opt('--mirror');
+const statusFlag = flag('--status');
+const dryRun = flag('--dry-run');
+const notifyTest = flag('--notify-test');
+const noNotify = flag('--no-notify');
+const configOpt = opt('--config');
 const destination = args[0];
 
 // Errors are thrown (never process.exit mid-way) so every finally block --
@@ -413,7 +434,7 @@ function pgDump(file, extra) {
   const fd = openSync(file, 'w');
   try {
     const envNames = Object.keys(source.pgEnv);
-    const r = spawnSync('docker', ['run', '--rm', ...envNames.flatMap(n => ['-e', n]), IMAGE, 'pg_dump', '--quote-all-identifiers', ...extra],
+    const r = spawnSync('docker', ['run', '--rm', '--name', 'talleria-dump-' + randomBytes(4).toString('hex'), '--label', `talleria.pid=${process.pid}`, ...envNames.flatMap(n => ['-e', n]), IMAGE, 'pg_dump', '--quote-all-identifiers', ...extra],
       { env: { ...process.env, ...source.pgEnv }, stdio: ['ignore', fd, 'pipe'], encoding: 'utf8', maxBuffer: 1 << 26 });
     if (r.status !== 0) fail(`Falló pg_dump (${file.split(/[\\/]/).pop()}):\n` + redact(r.stderr || '').split('\n').slice(-6).join('\n'));
   } finally { closeSync(fd); }
@@ -509,7 +530,7 @@ const LOG = 'restauracion-errores.log';
 function restoreAndFingerprint(dir, manifest, logDir) {
   const name = 'talleria-restore-' + randomBytes(4).toString('hex');
   const password = randomBytes(18).toString('hex');
-  const run = docker(['run', '-d', '--name', name, '-e', 'POSTGRES_PASSWORD', '-v', `${dir}:/backup:ro`, IMAGE], { env: { ...process.env, POSTGRES_PASSWORD: password } });
+  const run = docker(['run', '-d', '--name', name, '--label', `talleria.pid=${process.pid}`, '-e', 'POSTGRES_PASSWORD', '-v', `${dir}:/backup:ro`, IMAGE], { env: { ...process.env, POSTGRES_PASSWORD: password } });
   if (run.status !== 0) fail('No se pudo arrancar el contenedor de prueba: ' + run.stderr);
   // The container holds the restored database: an abrupt exit (Ctrl+C, closed
   // window, uncaught error) must remove it too, not only the plaintext files.
@@ -617,7 +638,11 @@ function sealLog(dir, key) {
 
 // Verifies a backup; an encrypted one is decrypted into a temporary folder
 // inside the (access-restricted) backup folder, removed afterwards.
-function verifyBackup(dir) {
+async function verifyBackup(dir) {
+  const releaseLock = await acquireLock();
+  try { return verifyBackupLocked(dir); } finally { releaseLock(); }
+}
+function verifyBackupLocked(dir) {
   // Verifying writes decrypted files and a diagnostic into the backup folder:
   // never inside the repository or OneDrive, even if a backup was moved there.
   checkOutsideRepoAndOneDrive(dir);
@@ -654,10 +679,22 @@ function decryptCommand(src, out) {
   console.log(`✔ Descifrado en ${target}. Contiene datos personales: bórrala en cuanto termines.`);
 }
 
-async function backup() {
-  if (!destination) fail('Uso: node scripts/backup-database.mjs <carpeta-destino>   |   --verify <carpeta-de-copia>');
+async function backup(target = destination, { haveLock = false } = {}) {
+  if (!target) fail('Uso: node scripts/backup-database.mjs <carpeta-destino>   |   --verify <carpeta-de-copia>');
   if (docker(['info', '--format', '{{.ServerVersion}}']).status !== 0) fail('Docker no está en marcha.');
-  const base = checkOutsideRepoAndOneDrive(destination);
+  const base = checkOutsideRepoAndOneDrive(target);
+  mkdirSync(base, { recursive: true });
+  // One backup at a time per folder; leftovers of an interrupted run (also a
+  // forced kill or power cut, where no cleanup could run) are removed first.
+  const releaseLock = haveLock ? () => {} : await acquireLock();
+  try {
+    loadSource(); // the sweep needs it to recognise this database's dump containers
+    sweep(base);
+    return await backupLocked(base);
+  } finally { releaseLock(); }
+}
+
+async function backupLocked(base) {
   loadSource();
   // Unencrypted backups are not allowed: without a usable key, stop before
   // anything is dumped.
@@ -685,6 +722,7 @@ async function backup() {
     emergency.delete('copia');
     throw e;
   }
+  return dir;
 }
 
 async function backupInto(dir, key, setPhase) {
@@ -733,13 +771,381 @@ async function backupInto(dir, key, setPhase) {
   console.log(`Carpeta de la copia: ${dir}`);
 }
 
+// ---- daily automation: lock, sweep, retention, mirror, alerts ----
+const PRIVATE_DIR = join(homedir(), 'TALLERIA-COPIAS-PRIVADO');
+const CONFIG_FILE = configOpt ? resolve(configOpt) : join(PRIVATE_DIR, 'config.json');
+let LOG_FILE = join(PRIVATE_DIR, 'registro', 'copias.log');
+const BACKUP_NAME = /^talleria-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/;
+// A backup folder containing this file is never removed by the rotation.
+const PROTECT = 'CONSERVAR.txt';
+
+// Status lines only (never data, keys or connection strings).
+function log(line) {
+  try { mkdirSync(dirname(LOG_FILE), { recursive: true }); writeFileSync(LOG_FILE, `${new Date().toISOString()} ${redact(line)}\n`, { flag: 'a' }); } catch { /* the log must never break a backup */ }
+}
+
+// Windows notification (toast), title and text passed by stdin.
+function notify(title, text) {
+  if (process.platform !== 'win32' || noNotify) return false;
+  const ps = `$t = [Console]::In.ReadToEnd() -split "\\n", 2;
+    [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;
+    [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null;
+    $x = New-Object Windows.Data.Xml.Dom.XmlDocument;
+    $x.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text></text></binding></visual></toast>');
+    $n = $x.GetElementsByTagName('text'); $n.Item(0).InnerText = $t[0]; $n.Item(1).InnerText = $t[1];
+    $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show((New-Object Windows.UI.Notifications.ToastNotification $x)); 'ok'`;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { input: `${title}\n${redact(text)}`, encoding: 'utf8' });
+  return r.status === 0 && r.stdout.trim() === 'ok';
+}
+
+function loadConfig() {
+  const defaults = { copias: join(PRIVATE_DIR, 'copias'), espejo: null, registro: LOG_FILE };
+  let c = {};
+  if (existsSync(CONFIG_FILE)) { try { c = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); } catch { fail(`${CONFIG_FILE} no es un JSON válido.`); } }
+  else if (configOpt) fail(`No existe ${CONFIG_FILE}.`);
+  const out = { ...defaults, ...c };
+  LOG_FILE = out.registro;
+  return out;
+}
+
+// One global lock for every operation that dumps, restores, rotates or
+// sweeps (backup, --daily, --verify, --sweep, --prune, --mirror), whatever the
+// folder, so none of them can touch what another is using. It is an
+// operating-system lock, not a file: a Windows named pipe that only one
+// process can create. The system releases it when the process ends in any
+// way (also a forced kill or a power cut), so there are no stale locks to
+// recover and no window in which two runs could both hold it.
+const LOCK_NAME = process.platform === 'win32' ? '\\\\.\\pipe\\talleria-copias-operacion' : join(tmpdir(), 'talleria-copias-operacion.sock');
+const pidAlive = pid => { try { if (!pid) return false; process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+async function acquireLock() {
+  const busy = () => fail('Ya hay otra operación de copias en curso (copia, verificación, rotación o limpieza).');
+  const listen = () => new Promise((res, rej) => {
+    const server = net.createServer(socket => socket.destroy());
+    server.once('error', rej);
+    server.listen(LOCK_NAME, () => res(server));
+  });
+  let server;
+  try { server = await listen(); } catch (e) {
+    if (e.code !== 'EADDRINUSE') throw e;
+    // A Unix socket file can outlive a killed process: if nobody answers it,
+    // it is stale. A Windows pipe never outlives its process.
+    if (process.platform === 'win32') busy();
+    const answered = await new Promise(res => { const c = net.connect(LOCK_NAME, () => { c.destroy(); res(true); }); c.on('error', () => res(false)); });
+    if (answered) busy();
+    rmSync(LOCK_NAME, { force: true });
+    server = await listen().catch(e2 => { if (e2.code === 'EADDRINUSE') busy(); throw e2; });
+  }
+  server.unref();
+  const release = () => { try { server.close(); } catch { /* already closed */ } };
+  emergency.set('bloqueo', release);
+  return () => { release(); emergency.delete('bloqueo'); };
+}
+
+// A backup folder's state from its own files, without decrypting anything.
+function backupState(dir) {
+  const files = readdirSync(dir);
+  if (files.includes('COPIA-NO-VALIDA.txt')) return 'no válida';
+  if (!files.includes('manifest.json')) return 'incompleta';
+  let m;
+  try { m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { return 'incompleta'; }
+  if (!m.cifrado || !m.archivos) return 'incompleta';
+  for (const meta of Object.values(m.archivos)) {
+    const p = join(dir, meta.cifrado?.archivo ?? '');
+    if (!meta.cifrado || !existsSync(p) || sha256(readFileSync(p)) !== meta.cifrado.sha256) return 'dañada';
+  }
+  // Leftover files next to an intact copy do not make it invalid: the sweep
+  // removes them; the copy keeps its place in the rotation.
+  return 'válida';
+}
+
+function listBackups(base) {
+  if (!existsSync(base)) return [];
+  return readdirSync(base).map(name => {
+    const m = name.match(BACKUP_NAME);
+    if (!m) return null;
+    const dir = join(base, name);
+    return { name, dir, date: new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])), state: backupState(dir) };
+  }).filter(Boolean).sort((a, b) => b.date - a.date);
+}
+
+// Local calendar day and ISO week of a date.
+const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function isoWeek(d) {
+  const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = (t.getDay() + 6) % 7;
+  t.setDate(t.getDate() - day + 3);
+  const first = new Date(t.getFullYear(), 0, 4);
+  return `${t.getFullYear()}-W${String(1 + Math.round(((t - first) / 86400000 - 3 + ((first.getDay() + 6) % 7)) / 7)).padStart(2, '0')}`;
+}
+
+// Retention: the newest valid copy of each of the 7 most recent days that
+// have one, plus the newest valid copy of each of the 4 most recent ISO weeks
+// that have one. Failed or incomplete copies are kept 7 days for diagnosis.
+// The newest valid copy is always kept.
+function retentionPlan(backups, now = new Date(), alsoKeep = []) {
+  const valid = backups.filter(b => b.state === 'válida');
+  const keep = new Map();
+  const days = new Set(), weeks = new Set();
+  for (const b of valid) {
+    const d = localDay(b.date);
+    if (!days.has(d) && days.size < 7) { days.add(d); keep.set(b.name, 'diaria'); }
+  }
+  for (const b of valid) {
+    const w = isoWeek(b.date);
+    if (!weeks.has(w) && weeks.size < 4) { weeks.add(w); keep.set(b.name, keep.has(b.name) ? keep.get(b.name) + ' y semanal' : 'semanal'); }
+  }
+  if (valid[0]) keep.set(valid[0].name, keep.get(valid[0].name) ?? 'la más reciente');
+  // The copy this run has just made is never removed by its own rotation,
+  // even if another copy carries a later date (e.g. after a clock change).
+  for (const name of alsoKeep) if (backups.some(b => b.name === name)) keep.set(name, keep.has(name) ? keep.get(name) + ', recién creada' : 'recién creada');
+  const remove = [];
+  for (const b of backups) if (existsSync(join(b.dir, PROTECT))) keep.set(b.name, keep.has(b.name) ? keep.get(b.name) + ', protegida' : 'protegida (CONSERVAR.txt)');
+  for (const b of backups) {
+    if (keep.has(b.name)) continue;
+    if (b.state === 'válida') remove.push({ ...b, motivo: 'fuera de la política' });
+    else if (now - b.date > 7 * 86400000) remove.push({ ...b, motivo: `${b.state}, más de 7 días` });
+    else keep.set(b.name, `${b.state} (se conserva 7 días para diagnóstico)`);
+  }
+  return { keep, remove };
+}
+
+function prune(base, { dry = false, alsoKeep = [] } = {}) {
+  const abs = physical(base);
+  if (inside(physical(repoRoot), abs)) fail('La carpeta de copias está dentro del repositorio.');
+  const backups = listBackups(abs);
+  if (!backups.some(b => b.state === 'válida')) fail('No hay ninguna copia válida en la carpeta: no se borra nada.');
+  const { keep, remove } = retentionPlan(backups, new Date(), alsoKeep);
+  for (const b of backups) if (keep.has(b.name)) console.log(`  conservar ${b.name} (${keep.get(b.name)})`);
+  for (const b of remove) {
+    console.log(`  ${dry ? 'se borraría' : 'borrar'} ${b.name} (${b.motivo})`);
+    if (!dry) { rmSync(b.dir, { recursive: true, force: true }); log(`rotación: borrada ${b.name} (${b.motivo}) en ${abs}`); }
+  }
+  console.log(`✔ Rotación${dry ? ' (simulación, sin borrar nada)' : ''}: ${keep.size} conservadas, ${remove.length} ${dry ? 'se borrarían' : 'borradas'}.`);
+  return { keep, remove };
+}
+
+// Writers that can outlive a killed run (Windows does not end child processes
+// with their parent): the pinned CLI's processes (they live in its own
+// folder), docker clients running our pg_dump, our labelled dump and restore
+// containers, and containers of the pinned image running pg_dump/pg_dumpall
+// (the CLI's dump containers have random names and no labels). Only called
+// under the global lock, when no legitimate TALLERIA operation is running.
+// A PostgreSQL server of another project, even on the same image, is never
+// touched: only containers whose command is pg_dump or pg_dumpall.
+// Lists containers, failing (instead of assuming "none") if Docker does not
+// answer: a cleanup that cannot look must not report success.
+function listContainers() {
+  const r = docker(['ps', '-a', '--no-trunc', '--format', '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Command}}\t{{.Label "talleria.pid"}}']);
+  if (r.status !== 0) fail('No se pudo consultar Docker para limpiar restos: la copia no continúa.');
+  return r.stdout.split('\n').filter(Boolean).map(line => { const [id, name, image, command = '', owner = ''] = line.split('\t'); return { id, name, image, command, owner }; });
+}
+// Removes containers and confirms with Docker that they are gone (3 tries).
+function removeContainersConfirmed(ids, what) {
+  if (!ids.length) return 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    for (const id of ids) docker(['rm', '-f', '-v', id]);
+    const left = new Set(listContainers().map(c => c.id));
+    if (!ids.some(id => left.has(id))) return ids.length;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+  }
+  fail(`No se pudo confirmar el borrado de ${what} (pueden contener datos en claro). Bórralos con: docker rm -f -v <id>. La copia no continúa.`);
+}
+const ORPHAN_PS = `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne ${process.pid} -and $_.CommandLine -and (($_.Name -eq 'node.exe' -and $_.CommandLine -like '*talleria-supabase-cli-*node_modules*supabase*') -or ($_.Name -eq 'supabase.exe' -and $_.ExecutablePath -like '*talleria-supabase-cli-*') -or ($_.Name -eq 'docker.exe' -and $_.CommandLine -like '* run *' -and $_.CommandLine -like '*--name talleria-dump-*')) } | ForEach-Object { $_.ProcessId }`;
+// Errors are terminating and success is explicit ("OK" first): a query that
+// failed silently must never read as "no orphan processes".
+function orphanProcesses() {
+  const ps = `$ErrorActionPreference = 'Stop'; try { $all = Get-CimInstance Win32_Process -ErrorAction Stop; 'OK'; $all | ${ORPHAN_PS.replace(/^Get-CimInstance Win32_Process \| /, '')} } catch { exit 1 }`;
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8' });
+  const lines = (r.stdout || '').split(/\s+/).filter(Boolean);
+  if (r.status !== 0 || lines[0] !== 'OK') fail('No se pudo consultar los procesos para limpiar restos: la copia no continúa.');
+  return lines.slice(1);
+}
+
+// The pinned CLI passes the connection to its dump container as environment
+// variables (checked against the real CLI). A container counts as dumping
+// OUR database only if PGHOST, PGPORT, PGUSER and PGDATABASE are exactly
+// ours, element by element (no partial match). Compared in memory, never
+// shown. Any error or doubt answers "no" (the container is left alone).
+function dumpsOurDatabase(id) {
+  const r = docker(['inspect', '--format', '{{json .Config.Env}}', id]);
+  if (r.status !== 0) return false;
+  let env;
+  try { env = JSON.parse(r.stdout.trim()); } catch { return false; }
+  if (!Array.isArray(env)) return false;
+  return ['PGHOST', 'PGPORT', 'PGUSER', 'PGDATABASE'].every(k => env.includes(`${k}=${source.pgEnv[k]}`));
+}
+
+function stopOrphans() {
+  let processes = 0;
+  if (process.platform === 'win32') {
+    // Stop them, then confirm none is left (3 tries).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const pids = orphanProcesses();
+      if (!pids.length) break;
+      for (const pid of pids) spawnSync('taskkill', ['/F', '/T', '/PID', pid], { stdio: 'ignore' });
+      processes += attempt === 0 ? pids.length : 0;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+      if (attempt === 2 && orphanProcesses().length) fail('No se pudieron detener procesos de volcado huérfanos: la copia no continúa.');
+    }
+  }
+  const targets = listContainers().filter(c => {
+    const ours = /^talleria-dump-/.test(c.name);
+    // A CLI dump container (no name or label of ours) counts as ours only if
+    // it runs pg_dump on the pinned image AND dumps exactly OUR database (see
+    // dumpsOurDatabase). Anything ambiguous is left alone; without a
+    // configured source, only containers labelled as ours are touched.
+    const cliDump = !!source && c.image === IMAGE && /pg_dump(all)?\b/.test(c.command) && dumpsOurDatabase(c.id);
+    if (!ours && !cliDump) return false;
+    return !(c.owner && Number(c.owner) !== process.pid && pidAlive(Number(c.owner)));
+  }).map(c => c.id);
+  const writers = removeContainersConfirmed(targets, 'contenedores de volcado huérfanos');
+  return { processes, writers };
+}
+
+// Leftovers of an interrupted run: plaintext files and decrypted temp folders
+// inside backup folders, incomplete folders, and restore containers. Runs
+// under the folder lock, so it never touches a backup in progress.
+function sweep(base) {
+  // First stop anything that could still be writing, then delete.
+  const orphans = stopOrphans();
+  let files = 0, folders = 0, containers = 0;
+  for (const name of existsSync(base) ? readdirSync(base) : []) {
+    if (!BACKUP_NAME.test(name)) continue;
+    const dir = join(base, name);
+    for (const x of readdirSync(dir)) {
+      if (x.endsWith('.enc') || x === 'manifest.json' || x === 'COPIA-NO-VALIDA.txt' || x === PROTECT) continue;
+      rmSync(join(dir, x), { recursive: true, force: true });
+      files++;
+    }
+    const left = readdirSync(dir);
+    if (!left.length) { rmSync(dir, { recursive: true, force: true }); folders++; }
+    else if (backupState(dir) === 'incompleta' && !left.includes('COPIA-NO-VALIDA.txt')) writeFileSync(join(dir, 'COPIA-NO-VALIDA.txt'), 'Copia interrumpida antes de completarse: no la uses para restaurar.\n');
+  }
+  // Abandoned restore containers (they hold a restored database in clear):
+  // removal confirmed with Docker, or the run stops.
+  const stale = listContainers().filter(c => /^talleria-restore-/.test(c.name) && !(c.owner && Number(c.owner) !== process.pid && pidAlive(Number(c.owner)))).map(c => c.id);
+  containers = removeContainersConfirmed(stale, 'contenedores de restauración abandonados');
+  if (files || folders || containers || orphans.processes || orphans.writers) {
+    const msg = `limpieza de restos de una copia interrumpida: ${orphans.processes} procesos y ${orphans.writers} contenedores de volcado huérfanos detenidos, ${files} archivos o carpetas temporales, ${folders} carpetas incompletas, ${containers} contenedores de prueba (en ${base})`;
+    console.log('✔ ' + msg[0].toUpperCase() + msg.slice(1));
+    log(msg);
+  }
+  return { files, folders, containers };
+}
+
+// Second copy: only the encrypted files and the manifest (no data in clear),
+// so the target may be a cloud-synced folder. Every file is checked by hash.
+function mirrorBackup(dir, mirrorBase) {
+  const target = physical(mirrorBase);
+  if (inside(physical(repoRoot), target)) fail('La carpeta espejo está dentro del repositorio.');
+  if (backupState(dir) !== 'válida') fail('Solo se copian al espejo copias válidas y cifradas.');
+  const out = join(target, basename(dir));
+  if (existsSync(out)) fail(`El espejo ya tiene ${basename(dir)}.`);
+  mkdirSync(out, { recursive: true });
+  try {
+    for (const x of readdirSync(dir)) if (x.endsWith('.enc') || x === 'manifest.json' || x === PROTECT) writeFileSync(join(out, x), readFileSync(join(dir, x)));
+    if (backupState(out) !== 'válida') fail('La copia en el espejo no coincide con el original.');
+  } catch (e) { rmSync(out, { recursive: true, force: true }); throw e; }
+  console.log(`✔ Copia cifrada duplicada en el espejo (${basename(dir)}), verificada por hash.`);
+  return out;
+}
+
+// Copies the CONSERVAR.txt markers of local backups to their mirrored copies
+// (it holds no data), so the mirror rotation never removes a protected copy.
+function syncProtection(base, mirrorBase) {
+  for (const b of listBackups(base)) {
+    const twin = join(mirrorBase, b.name);
+    if (existsSync(join(b.dir, PROTECT)) && existsSync(twin) && !existsSync(join(twin, PROTECT))) writeFileSync(join(twin, PROTECT), readFileSync(join(b.dir, PROTECT)));
+  }
+}
+
+// Starts Docker Desktop if needed and waits for the engine (up to 4 min).
+function ensureDocker() {
+  if (docker(['info', '--format', '{{.ServerVersion}}']).status === 0) return;
+  if (process.platform !== 'win32') fail('Docker no está en marcha.');
+  const where = spawnSync('where.exe', ['docker'], { encoding: 'utf8' }).stdout.split(/\r?\n/).filter(Boolean)[0];
+  const candidates = [where && resolve(dirname(where), '..', '..', 'Docker Desktop.exe'), join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Docker', 'Docker', 'Docker Desktop.exe'), join(process.env.LOCALAPPDATA ?? '', 'Programs', 'DockerDesktop', 'Docker Desktop.exe')].filter(Boolean);
+  const exe = candidates.find(p => existsSync(p));
+  if (!exe) fail('Docker no está en marcha y no se encontró Docker Desktop.');
+  console.log('Arrancando Docker Desktop…');
+  spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
+  const deadline = Date.now() + 240_000;
+  while (Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+    if (docker(['info', '--format', '{{.ServerVersion}}']).status === 0) return;
+  }
+  fail('Docker Desktop no arrancó en 4 minutos.');
+}
+
+function status() {
+  const c = loadConfig();
+  for (const [label, base] of [['copias', c.copias], ...(c.espejo ? [['espejo', c.espejo]] : [])]) {
+    const list = listBackups(base);
+    const last = list.find(b => b.state === 'válida');
+    const hours = last ? Math.round((Date.now() - last.date) / 3600000) : null;
+    console.log(`${label}: ${list.length} copias, última válida ${last ? `${last.name} (hace ${hours} h)` : 'ninguna'}${list.filter(b => b.state !== 'válida').length ? `, ${list.filter(b => b.state !== 'válida').length} no válidas o incompletas` : ''}`);
+  }
+}
+
+// The scheduled job: start Docker, back up (sweep and lock included), rotate,
+// mirror, log; any failure is logged and shown as a Windows notification.
+async function daily() {
+  try {
+    // Inside the try: a broken config.json must be logged (to the default log)
+    // and notified like any other failure, never stop the copies silently.
+    const c = loadConfig();
+    log('copia diaria: inicio');
+    const previous = listBackups(c.copias).find(b => b.state === 'válida');
+    if (previous && Date.now() - previous.date > 48 * 3600000) {
+      const msg = `La última copia válida es de hace ${Math.round((Date.now() - previous.date) / 3600000)} horas: alguna copia diaria no se hizo.`;
+      log('aviso: ' + msg); notify('TALLERIA: copias atrasadas', msg);
+    }
+    ensureDocker();
+    const releaseLock = await acquireLock();
+    try { await dailyLocked(c); } finally { releaseLock(); }
+  } catch (e) {
+    const msg = e instanceof Stop ? e.message : String(e?.message ?? e);
+    log('copia diaria: FALLO: ' + msg.split('\n')[0]);
+    notify('TALLERIA: la copia de seguridad ha fallado', msg.split('\n')[0].slice(0, 200) + ' Detalles en el registro de copias.');
+    throw e;
+  }
+}
+
+// Runs under the global lock for the whole job: backup, mirror and rotation.
+async function dailyLocked(c) {
+  const dir = await backup(c.copias, { haveLock: true });
+  const fresh = [basename(dir)];
+  // Duplicate first, rotate last: a rotation can never act on a copy that
+  // still has to be mirrored, and it never removes the copy just made.
+  if (c.espejo) { mirrorBackup(dir, c.espejo); syncProtection(c.copias, c.espejo); }
+  console.log('Rotación de las copias locales:');
+  prune(c.copias, { alsoKeep: fresh });
+  if (c.espejo) { console.log('Rotación del espejo:'); prune(c.espejo, { alsoKeep: fresh }); }
+  log(`copia diaria: correcta (${basename(dir)}${c.espejo ? ', duplicada en el espejo' : ''})`);
+}
+
 try {
   if (initKey) createKey();
   else if (exportKey) await exportKeyToClipboard();
   else if (checkKeyCopyFlag) await checkKeyCopy();
   else if (checkKeyFlag) checkKey();
   else if (decryptDir) decryptCommand(decryptDir, outDir);
-  else if (verifyDir) verifyBackup(resolve(verifyDir));
+  else if (verifyDir) await verifyBackup(resolve(verifyDir));
+  else if (dailyFlag) await daily();
+  else if (pruneDir) { loadConfig(); const release = await acquireLock(); try { prune(pruneDir, { dry: dryRun }); } finally { release(); } }
+  else if (sweepDir) {
+    loadConfig();
+    // Optional here: with a source, this database's CLI dump containers are
+    // recognised too; without it, only labelled containers are touched.
+    try { loadSource(); } catch (e) { if (!(e instanceof Stop)) throw e; }
+    const base = checkOutsideRepoAndOneDrive(sweepDir);
+    const release = await acquireLock();
+    try { sweep(base); } finally { release(); }
+  }
+  else if (statusFlag) status();
+  else if (notifyTest) console.log(notify('TALLERIA: prueba de aviso', 'Si ves esto, los avisos de copias funcionan.') ? '✔ Aviso enviado.' : '✘ No se pudo mostrar el aviso.');
+  else if (mirrorDir) { if (!destination) fail('Uso: --mirror <carpeta-espejo> <carpeta-de-copia>'); const release = await acquireLock(); try { mirrorBackup(resolve(destination), mirrorDir); } finally { release(); } }
   else await backup();
 } catch (e) {
   console.error('✘ ' + redact(e instanceof Stop ? e.message : (e?.stack ?? e)));
