@@ -12,6 +12,7 @@ export const DEMO_USER_ID = 'demo-owner';
 const actionLabels: Record<string, string> = {
   intake: 'Registró una nueva solicitud',
   public_intake: 'Nueva solicitud desde la recepción online',
+  public_booking: 'Cita reservada por el cliente desde la recepción online',
   status: 'Cambió el estado de una solicitud',
   appointment: 'Creó o modificó una cita',
   appointment_status: 'Cambió el estado de una cita',
@@ -46,9 +47,9 @@ const currentUserId = (state: State) => state.user_id ?? DEMO_USER_ID;
 // entries mean the teammate can't be named (not loaded yet, call failed,
 // demo mode, or no longer a member).
 export function activityActor(event: AuditEvent, state: State, memberEmails: ReadonlyMap<string, string> | null): string {
-  // public_intake is written with a null user_id by the anonymous public
+  // public_intake and public_booking are written with a null user_id by the anonymous public
   // reception, so it must be checked before the null -> "Sistema" rule.
-  if (event.action === 'public_intake') return 'Cliente (recepción online)';
+  if (event.action === 'public_intake' || event.action === 'public_booking') return 'Cliente (recepción online)';
   if (event.user_id === null) return 'Sistema';
   if (event.user_id === currentUserId(state)) return 'Tú';
   return memberEmails?.get(event.user_id) ?? 'Otro miembro del equipo';
@@ -130,7 +131,7 @@ export function pendingMembers(state: State, lookup: MemberLookup): PendingMembe
   const audit = state.audit ?? [];
   const ids = new Set<string>();
   for (const event of audit) {
-    if (event.action !== 'public_intake' && event.user_id !== null && event.user_id !== me) ids.add(event.user_id);
+    if (event.action !== 'public_intake' && event.action !== 'public_booking' && event.user_id !== null && event.user_id !== me) ids.add(event.user_id);
     if (event.entity_type === 'member' && event.entity_id !== event.user_id && event.entity_id !== me) ids.add(event.entity_id);
   }
   const joins = latestJoins(audit);

@@ -34,7 +34,7 @@ export interface WorkshopHourRange { day_of_week: number; opens_at: string; clos
 export interface WorkshopHourException { version?: number; id: string; workshop_id: string; exception_date: string; closed: boolean; opens_at: string | null; closes_at: string | null }
 export interface State { schema_version?: number; role?: 'owner' | 'staff'; user_id?: string; resources?: Resource[]; hours?: WorkshopHourRange[]; hour_exceptions?: WorkshopHourException[]; audit?: AuditEvent[]; metrics?: { new_requests: number; upcoming: number; pending_customers: number; completed: number }; page_info?: { view: string; offset: number; total: number; ids: string[] }; customer_counts?: Record<string, { vehicles: number; requests: number }>; workshop: Workshop; customers: Customer[]; vehicles: Vehicle[]; conversations: Conversation[]; requests: ServiceRequest[]; appointments: Appointment[] }
 export type Command =
-  | { type: 'intake'; id: string; data: Intake; messages: Message[]; channel?: 'simulator' | 'public'; consent?: boolean }
+  | { type: 'intake'; id: string; data: Intake; messages: Message[]; channel?: 'simulator' | 'public'; consent?: boolean; slot?: string }
   | { type: 'status'; version?: number; id: string; status: RequestStatus }
   | { type: 'appointment'; version?: number; request_version?: number; resource_id?: string; id: string; request_id: string; starts_at: string; duration_minutes: number; notes: string }
   | { type: 'appointment_status'; version?: number; request_version?: number; id: string; status: Appointment['status'] }
@@ -213,22 +213,91 @@ function isWithinBusinessHours(s: State, start: Date, durationMinutes: number): 
   const ranges = businessHoursForDate(s, from.date)!; // hours.length > 0 here, so this is never null
   return ranges.some(h => startMs >= zonedTimeToUtc(from.date, h.opens_at, tz) && endMs <= zonedTimeToUtc(from.date, h.closes_at, tz));
 }
+// Public self-booking windows, the same as public_availability (listing) and
+// public_intake (booking) in PostgreSQL.
+export const PUBLIC_BOOKING = { listLeadMinutes: 60, listDays: 14, bookLeadMinutes: 15, bookMaxDays: 15, dailyCap: 10 } as const;
+export const PUBLIC_BOOKING_NOTE = 'Reservada por el cliente desde la recepción digital.';
+export const SLOT_TAKEN_MESSAGE = 'Esa hora ya no está disponible. Elige otra.';
+export const BOOKING_UNAVAILABLE_MESSAGE = 'No podemos reservar esta hora automáticamente. Envía la solicitud sin reservar y el taller te llamará.';
+// Mirrors public_intake (022): a retry of a stored submission must ask for
+// exactly the booking it stored (or none), never silently "succeed" with a
+// different hour the visitor would then be told about.
+function checkStoredIntake(s: State, command: Extract<Command, { type: 'intake' }>) {
+  const stored = s.requests.find(r => r.id === command.id);
+  if (!stored) return false;
+  // The hour recorded when it was booked, never the appointment itself
+  // (staff can edit, move or cancel it).
+  const booked = (s.audit ?? []).find(a => a.action === 'public_booking' && a.metadata?.request_id === command.id)?.metadata?.starts_at as string | undefined;
+  const requested = command.slot === undefined ? undefined : new Date(command.slot).getTime();
+  if ((booked === undefined ? undefined : new Date(booked).getTime()) !== requested) throw new Error(`Tu solicitud ya estaba enviada (${stored.availability}). Si quieres cambiar la hora, llama al taller.`);
+  // Same booking as stored, but the form would say it stands at that hour:
+  // only when it still does (staff may have moved or cancelled it since).
+  if (requested !== undefined && !s.appointments.some(a => a.request_id === command.id && a.status === 'scheduled' && new Date(a.starts_at).getTime() === requested)) throw new Error('Tu solicitud ya estaba enviada, pero el taller ha cambiado esa cita desde entonces. Te llamará para confirmarla.');
+  return true;
+}
+export interface FreeSlot { starts_at: string; resource_id?: string }
+const timeToMinutes = (time: string) => { const [hh, mm] = time.split(':').map(Number); return hh * 60 + mm; };
+// Mirrors workshop_free_slots in PostgreSQL: the workshop's structured hours
+// cut into slots of appointment_minutes, each paired with the first active
+// resource (by id) with no overlapping scheduled appointment. No structured
+// hours, or no active resource, means no slots at all.
+export function freeSlots(s: State, from: Date, to: Date): FreeSlot[] {
+  if ((s.hours ?? []).length === 0) return [];
+  const tz = s.workshop.timezone, minutes = s.workshop.appointment_minutes;
+  // A demo state without resources has a single implicit one, exactly like
+  // applyCommand's own overlap check (resource_id undefined everywhere).
+  const resources: (string | undefined)[] = s.resources ? s.resources.filter(r => r.active).map(r => r.id).sort() : [undefined];
+  const busy = (resource: string | undefined, start: number) => s.appointments.some(a => a.status === 'scheduled' && a.resource_id === resource && start < new Date(a.starts_at).getTime() + a.duration_minutes * 60000 && start + minutes * 60000 > new Date(a.starts_at).getTime());
+  const found = new Map<number, string | undefined>();
+  const last = localDateParts(to, tz).date;
+  for (let date = localDateParts(from, tz).date; date <= last;) {
+    for (const range of businessHoursForDate(s, date) ?? []) {
+      const open = timeToMinutes(range.opens_at), span = timeToMinutes(range.closes_at) - open;
+      for (let k = 0; (k + 1) * minutes <= span; k++) {
+        const wall = open + k * minutes;
+        const start = zonedTimeToUtc(date, `${String(Math.floor(wall / 60)).padStart(2, '0')}:${String(wall % 60).padStart(2, '0')}`, tz);
+        if (found.has(start) || start < from.getTime() || start >= to.getTime() || !isWithinBusinessHours(s, new Date(start), minutes)) continue;
+        const free = resources.filter(r => !busy(r, start));
+        if (free.length > 0) found.set(start, free[0]);
+      }
+    }
+    const [y, m, d] = date.split('-').map(Number);
+    date = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  }
+  return [...found].sort((a, b) => a[0] - b[0]).map(([start, resource_id]) => ({ starts_at: new Date(start).toISOString(), ...(resource_id ? { resource_id } : {}) }));
+}
+// "DD/MM/YYYY HH:MM" on the workshop's wall clock, as public_intake writes it.
+export function formatSlot(iso: string, timeZone: string): string {
+  const date = new Date(iso);
+  const [y, m, d] = localDateParts(date, timeZone).date.split('-');
+  const minutes = localMinutesOfDay(date, timeZone);
+  return `${d}/${m}/${y} ${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
 export function applyCommand(current: State, command: Command, now = new Date()): State {
   const s = structuredClone(current);
   const workshop_id = s.workshop.id;
   if (ownerOnlyCommands.has(command.type) && s.role === 'staff') throw new Error('Solo el propietario puede realizar esta operación.');
   const recent = (s.audit ?? []).filter(a => a.user_id === (s.user_id ?? 'demo-owner') && new Date(a.created_at).getTime() > now.getTime() - 60000);
-  if (command.type === 'intake' && s.requests.some(r => r.id === command.id)) return s;
+  if (command.type === 'intake' && checkStoredIntake(s, command)) return s;
   if (recent.length >= 100 || command.type === 'intake' && recent.filter(a => a.action === 'intake').length >= 15) throw new Error('Has realizado demasiadas operaciones. Espera un minuto y vuelve a intentarlo.');
   const checkVersion = (old: { version?: number } | undefined, value: { version?: number }) => { if (old && (old.version ?? 1) !== value.version) throw new Error('Este registro ha cambiado. Actualiza la vista antes de guardar.'); };
   if (command.type === 'intake') {
-    if (s.requests.some(r => r.id === command.id)) return s;
     // Mirrors public_intake's own check: the public link's consent
     // checkbox is a real required field, not a bot heuristic, so a public
     // submission without it is rejected the same way a missing name would
     // be. Manual/staff intake (the default channel) never needed it.
     if (command.channel === 'public' && !command.consent) throw new Error('Debes aceptar el aviso legal para continuar.');
     const d = intakeSchema.parse(command.data);
+    // Mirrors public_intake (022): a self-booked slot must still be free when
+    // the request arrives, or nothing is written at all.
+    let booking: FreeSlot | undefined;
+    if (command.slot !== undefined) {
+      const start = new Date(command.slot).getTime();
+      if (command.channel !== 'public') throw new Error('La hora elegida no es válida.');
+      if (!Number.isFinite(start) || start < now.getTime() + PUBLIC_BOOKING.bookLeadMinutes * 60000 || start > now.getTime() + PUBLIC_BOOKING.bookMaxDays * 86400000) throw new Error(SLOT_TAKEN_MESSAGE);
+      booking = freeSlots(s, new Date(start), new Date(start + 1000)).find(f => new Date(f.starts_at).getTime() === start);
+      if (!booking) throw new Error(SLOT_TAKEN_MESSAGE);
+    }
     let customer = s.customers.find(c => tryNormalizePhone(c.phone) === normalizePhone(d.phone));
     if (!customer) { customer = { id: crypto.randomUUID(), workshop_id, name: d.name, phone: d.phone, phone_e164: d.phone, notes: '', version: 1 }; s.customers.push(customer); }
     let vehicle = s.vehicles.find(v => d.plate ? v.plate === d.plate : v.customer_id === customer.id && v.brand.toLowerCase() === d.brand.toLowerCase() && v.model.toLowerCase() === d.model.toLowerCase());
@@ -240,7 +309,15 @@ export function applyCommand(current: State, command: Command, now = new Date())
     }
     const conversation_id = crypto.randomUUID();
     s.conversations.unshift({ id: conversation_id, workshop_id, messages: command.messages, channel: command.channel ?? 'simulator', created_at: now.toISOString() });
-    s.requests.unshift({ version: 1, id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: d.availability, notes: d.notes, status: 'nueva', created_at: now.toISOString(), consent_at: command.channel === 'public' ? now.toISOString() : null });
+    s.requests.unshift({ version: 1, id: command.id, workshop_id, customer_id: customer.id, vehicle_id: vehicle.id, conversation_id, reason: d.reason, availability: booking ? 'Cita reservada por el cliente: ' + formatSlot(booking.starts_at, s.workshop.timezone) : d.availability, notes: d.notes, status: booking ? 'cita_creada' : 'nueva', created_at: now.toISOString(), consent_at: command.channel === 'public' ? now.toISOString() : null });
+    if (booking) {
+      // Same abuse limit as public_intake (022), with its same message.
+      const today = (s.audit ?? []).filter(a => a.action === 'public_booking' && new Date(a.created_at).getTime() > now.getTime() - 86400000).length;
+      if (today >= PUBLIC_BOOKING.dailyCap) throw new Error(BOOKING_UNAVAILABLE_MESSAGE);
+      const id = crypto.randomUUID();
+      s.appointments.push({ version: 1, id, workshop_id, resource_id: booking.resource_id, request_id: command.id, starts_at: booking.starts_at, duration_minutes: s.workshop.appointment_minutes, notes: PUBLIC_BOOKING_NOTE, status: 'scheduled' });
+      s.audit = [{ id: crypto.randomUUID(), workshop_id, user_id: null, action: 'public_booking', entity_type: 'appointment', entity_id: id, created_at: now.toISOString(), metadata: { request_id: command.id, starts_at: booking.starts_at } }, ...(s.audit ?? [])];
+    }
   }
   if (command.type === 'status') {
     const request = s.requests.find(r => r.id === command.id);

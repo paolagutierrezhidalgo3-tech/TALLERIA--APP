@@ -26,14 +26,17 @@ async function database(skip: string[] = []) {
 
 // Everything 019/020 and their rollbacks touch: references to auth.users,
 // nullability of the invitation columns, triggers on auth.users and every
-// public function (definition and grants).
+// public function (definition and grants). Definitions are compared
+// without carriage returns: a file checked out on Windows has CRLF line
+// endings (as production stores the functions applied from there), the
+// same file in CI has LF, and only the line endings differ.
 async function schema(db: PGlite) {
   const q = async (s: string) => (await db.query(s)).rows;
   return {
     fks: await q("select conrelid::regclass::text t, conname, pg_get_constraintdef(oid) def, condeferrable, convalidated from pg_constraint where contype = 'f' and confrelid = 'auth.users'::regclass order by 1, 2"),
     columns: await q("select attname, attnotnull from pg_attribute where attrelid = 'public.workshop_invitations'::regclass and attname in ('invited_by', 'accepted_by', 'email') order by 1"),
     triggers: (await db.query<{ tgname: string; def: string }>("select tgname, pg_get_triggerdef(oid) def from pg_trigger where tgrelid = 'auth.users'::regclass and not tgisinternal order by 1")).rows,
-    functions: await q("select p.oid::regprocedure::text f, md5(pg_get_functiondef(p.oid)) def, coalesce(p.proacl::text, '') acl from pg_proc p where p.pronamespace = 'public'::regnamespace order by 1"),
+    functions: await q("select p.oid::regprocedure::text f, md5(replace(pg_get_functiondef(p.oid), chr(13), '')) def, coalesce(p.proacl::text, '') acl from pg_proc p where p.pronamespace = 'public'::regnamespace order by 1"),
   };
 }
 
@@ -94,6 +97,49 @@ describe('reversiones de producción de las migraciones 019 y 020', () => {
       expect(await schema(db)).toEqual(state);
     } finally {
       await db.close();
+    }
+  }, 120000);
+});
+
+// Rollback of 022 (public self-booking): with every migration, rolling it
+// back must give exactly the database without 022, and applying 022 again
+// the full one -- including when visitors already booked appointments.
+describe('reversión de la migración 022', () => {
+  const rollback022 = sql('supabase/rollbacks/202610120022_public_booking.rollback.sql');
+  const m022 = sql('supabase/migrations/202610120022_public_booking.sql');
+  it('deja el estado sin 022 (public_intake como en 017 y rechazando horas de formularios antiguos), conserva las citas y se puede reaplicar', async () => {
+    const [full, without] = await Promise.all([database(), database(['202610120022'])]);
+    try {
+      const after = await schema(full), expected = await schema(without);
+      expect(after).not.toEqual(expected);
+      const owner = '30220000-0000-4000-8000-000000000001';
+      await full.query('insert into auth.users(id) values ($1)', [owner]);
+      await full.exec('set role authenticated');
+      await full.query("select set_config('request.jwt.claim.sub', $1, false)", [owner]);
+      const w = (await full.query<{ id: string }>("select public.create_workshop('Taller 3022') id")).rows[0].id;
+      await full.exec('reset role');
+      await full.query("insert into public.workshop_hours(workshop_id, day_of_week, opens_at, closes_at) select $1, d, '09:00', '11:00' from generate_series(1, 7) d", [w]);
+      const slug = (await full.query<{ slug: string }>('select slug from public.workshops where id = $1', [w])).rows[0].slug;
+      const slot = (await full.query<{ a: { slots: string[] } }>('select public.public_availability($1) a', [slug])).rows[0].a.slots[0];
+      await full.query('select public.public_intake(p_slug=>$1, p_data=>$2::jsonb, p_messages=>$3::jsonb, p_client_id=>$4::uuid, p_consent=>true)',
+        [slug, JSON.stringify({ name: 'Cliente 3022', phone: '600302200', brand: 'SEAT', model: 'Ibiza', plate: '', reason: 'Revisión', availability: 'x', slot_starts_at: slot }), JSON.stringify([{ role: 'user', content: 'Hola' }]), crypto.randomUUID()]);
+      await full.exec(rollback022);
+      // Identical to the database without 022 except public_intake, which
+      // is 017's plus the guard that refuses a slot from a stale form.
+      const rolled = await schema(full);
+      const isIntake = (f: unknown) => String((f as { f: string }).f).startsWith('public_intake(');
+      expect({ ...rolled, functions: rolled.functions.filter(f => !isIntake(f)) }).toEqual({ ...expected, functions: expected.functions.filter(f => !isIntake(f)) });
+      expect((rolled.functions.find(isIntake) as { acl: string }).acl).toBe((expected.functions.find(isIntake) as { acl: string }).acl);
+      const intake = (body: Record<string, unknown>) => full.query('select public.public_intake(p_slug=>$1, p_data=>$2::jsonb, p_messages=>$3::jsonb, p_client_id=>$4::uuid, p_consent=>true)',
+        [slug, JSON.stringify({ name: 'Cliente 3022b', phone: '600302201', brand: 'SEAT', model: 'Ibiza', plate: '', reason: 'Revisión', availability: 'Tardes', ...body }), JSON.stringify([{ role: 'user', content: 'Hola' }]), crypto.randomUUID()]);
+      await expect(intake({ slot_starts_at: slot })).rejects.toThrow('No podemos reservar esta hora automáticamente.');
+      await intake({});
+      await intake({ slot_starts_at: null });
+      expect((await full.query("select count(*)::int n from public.appointments where status = 'scheduled'")).rows).toEqual([{ n: 1 }]);
+      await full.exec(m022);
+      expect(await schema(full)).toEqual(after);
+    } finally {
+      await Promise.all([full.close(), without.close()]);
     }
   }, 120000);
 });
