@@ -8,6 +8,7 @@ import { publicDemoAvailability, publicDemoIntake, publicDemoWorkshop, type Publ
 import { getSupabase, isSupabaseMode } from '@/lib/supabase/client';
 import { databaseMessage } from '@/lib/security';
 import { Field } from './ui';
+import { AssistantReception, type AssistantMode } from './assistant-reception';
 
 const labels: Record<keyof Intake, string> = { name: 'Tu nombre', phone: 'Teléfono', brand: 'Marca', model: 'Modelo', plate: 'Matrícula (opcional)', reason: 'Motivo de la consulta', availability: 'Disponibilidad', notes: 'Observaciones (opcional)' };
 
@@ -62,11 +63,17 @@ function Wizard({ onSubmit, slug, availability, reloadAvailability }: { onSubmit
     : <Field key={field} label={labels[field]}>{['reason', 'notes', 'availability'].includes(field) ? <textarea rows={2} value={draft[field] ?? ''} onChange={e => setDraft({ ...draft, [field]: e.target.value })}/> : <input value={draft[field] ?? ''} onChange={e => setDraft({ ...draft, [field]: e.target.value })}/>}</Field>)}</div><label className="checkbox-field"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)}/><span>He leído y acepto el <a href={'/r/' + slug + '/aviso-legal'} target="_blank" rel="noopener noreferrer">aviso legal y la política de privacidad</a>.</span></label><button className="button primary full" disabled={busy || !consent}>{busy ? 'Enviando…' : slot ? 'Reservar la cita y enviar' : 'Enviar mi consulta'}<ArrowRight size={17}/></button></form>}{error && <p className="notice error" role="alert">{error}</p>}</section></div>;
 }
 
-export function PublicReceptionPage({ slug, workshop: initialWorkshop }: { slug: string; workshop?: PublicWorkshopInfo }) {
+export function PublicReceptionPage({ slug, workshop: initialWorkshop, assistant = null }: { slug: string; workshop?: PublicWorkshopInfo; assistant?: { mode: AssistantMode } | null }) {
   const [workshop, setWorkshop] = useState<PublicWorkshopInfo | null>(initialWorkshop ?? null);
   const [checked, setChecked] = useState(isSupabaseMode);
   const startedAt = useRef(new Date().toISOString()).current;
   const hpRef = useRef<HTMLInputElement>(null);
+  // Conversational assistant when the server turned one on (Supabase) or in
+  // the demo (simulated rules, run in the browser); the guided form is the
+  // fallback whenever it fails or the visitor prefers it.
+  const assistantMode: AssistantMode | null = isSupabaseMode ? assistant?.mode ?? null : 'simulated';
+  const [useAssistant, setUseAssistant] = useState(assistantMode !== null);
+  const [assistantFailed, setAssistantFailed] = useState(false);
   const [availability, setAvailability] = useState<PublicAvailability | null>(null);
   // Free slots are a convenience: any failure (no network, or a database
   // without public_availability yet) just leaves the free-text question,
@@ -134,7 +141,7 @@ export function PublicReceptionPage({ slug, workshop: initialWorkshop }: { slug:
       <div className="reception-footer"><small>Recepción digital de {workshop?.name ?? 'este taller'}.</small><a className="text-button" href={'/r/' + slug + '/aviso-legal'} target="_blank" rel="noopener noreferrer">Aviso legal y privacidad</a></div>
     </section>
     <section className="auth-form">
-      {workshop ? <Wizard onSubmit={onSubmit} slug={slug} availability={availability} reloadAvailability={loadAvailability}/> : <div className="card settings-card"><h2>No encontramos este taller.</h2><p className="muted">Comprueba el enlace que te compartieron.</p></div>}
+      {workshop ? useAssistant && assistantMode ? <AssistantReception slug={slug} mode={assistantMode} demo={!isSupabaseMode} workshopName={workshop.name} workshopTimezone={workshop.timezone ?? availability?.timezone ?? 'Europe/Madrid'} onSubmit={onSubmit} onFallback={failed => { setUseAssistant(false); setAssistantFailed(failed); }}/> : <>{assistantFailed && <p className="notice" role="status">El asistente no está disponible ahora mismo. Continúa con el formulario guiado; tu consulta llega igual al taller.</p>}<Wizard onSubmit={onSubmit} slug={slug} availability={availability} reloadAvailability={loadAvailability}/></> : <div className="card settings-card"><h2>No encontramos este taller.</h2><p className="muted">Comprueba el enlace que te compartieron.</p></div>}
       <input ref={hpRef} type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" className="sr-only" defaultValue=""/>
     </section>
   </main>;

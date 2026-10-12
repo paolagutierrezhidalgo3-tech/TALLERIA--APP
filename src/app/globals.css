@@ -136,3 +136,7 @@ input.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overf
 .slot-days,.slot-times{display:flex;flex-wrap:wrap;gap:8px}
 .slot-days{overflow-x:auto;flex-wrap:nowrap;padding-bottom:2px}
 .slot-picker .text-button{align-self:flex-start;padding:4px 0}
+.assistant-badge{display:inline-block;margin-left:6px;padding:2px 6px;border-radius:5px;font-size:9px;font-weight:700;letter-spacing:.4px;vertical-align:middle}
+.assistant-badge.simulated{background:#fff5e7;color:#a8772c}
+.assistant-badge.anthropic{background:#eaf2fe;color:#4f74b3}
+.assistant-notice{margin:0;padding:9px 20px;font-size:11px;color:var(--muted);background:#faf9fd;border-bottom:1px solid var(--line)}

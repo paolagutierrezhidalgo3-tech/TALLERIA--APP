@@ -2,7 +2,7 @@ import { PUBLIC_BOOKING, applyCommand, freeSlots, type Command } from '@/lib/dom
 import { upgradeDemo } from '@/lib/demo-migration';
 import { KEY, LEGACY, saveDemo } from '@/lib/repository';
 import type { IntakeSubmission } from './use-intake-wizard';
-export interface PublicWorkshopInfo { name: string; address: string; hours: string }
+export interface PublicWorkshopInfo { name: string; address: string; hours: string; timezone?: string }
 /** What public_availability returns: free start times only, never who
  * booked what. */
 export interface PublicAvailability { timezone: string; duration_minutes: number; slots: string[] }
@@ -20,8 +20,8 @@ function readDemoState() {
 export function publicDemoWorkshop(slug: string): PublicWorkshopInfo | null {
   const state = readDemoState();
   if (!state || state.workshop.slug !== slug) return null;
-  const { name, address, hours } = state.workshop;
-  return { name, address, hours };
+  const { name, address, hours, timezone } = state.workshop;
+  return { name, address, hours, timezone };
 }
 export function publicDemoAvailability(slug: string, now = new Date()): PublicAvailability | null {
   const state = readDemoState();
