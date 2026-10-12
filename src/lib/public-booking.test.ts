@@ -154,3 +154,17 @@ describe('reserva desde la recepción pública (modo demo)', () => {
     expect(demo.appointments).toHaveLength(1);
   });
 });
+
+describe('demos guardadas antes del horario de ejemplo', () => {
+  it('reciben el horario de ejemplo solo si nunca se configuró, y así el enlace público ofrece horas', async () => {
+    const { upgradeDemo, DEMO_SCHEMA_VERSION } = await import('./demo-migration');
+    const old = { ...workshop({ hours: undefined }), schema_version: 6 } as State;
+    const upgraded = upgradeDemo(old);
+    expect(upgraded.schema_version).toBe(DEMO_SCHEMA_VERSION);
+    expect(upgraded.hours).toHaveLength(10);
+    expect(freeSlots(upgraded, from, to).length).toBeGreaterThan(0);
+    // A schedule the owner saved -- even an empty one -- is never replaced.
+    expect(upgradeDemo({ ...workshop({ hours: [] }), schema_version: 6 } as State).hours).toEqual([]);
+    expect(upgradeDemo({ ...workshop(), schema_version: 6 } as State).hours).toEqual([{ day_of_week: 1, opens_at: '09:00', closes_at: '11:00' }]);
+  });
+});

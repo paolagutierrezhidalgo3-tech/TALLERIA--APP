@@ -1,4 +1,4 @@
-import { AgentError, LIMITS, parseHistory, runAgentTurn, type ReceptionistProvider, type ToolExecutor } from './agent';
+import { AgentError, LIMITS, emptyUsage, parseHistory, runAgentTurn, type ReceptionistProvider, type ToolExecutor } from './agent';
 import type { PublicAvailability } from '../reception/public-demo';
 import type { RateLimiter } from './config';
 
@@ -12,7 +12,7 @@ import type { RateLimiter } from './config';
 // guided form.
 
 type Rpc = (fn: 'public_workshop_info' | 'public_availability', args: { p_slug: string }) => Promise<{ data: unknown; error: unknown }>;
-export interface HandlerDeps { provider: ReceptionistProvider | null; rpc: Rpc; limiter: RateLimiter; now?: () => Date; log?: (message: string) => void }
+export interface HandlerDeps { provider: ReceptionistProvider | null; rpc: Rpc; limiter: RateLimiter; now?: () => Date; log?: (message: string) => void; usageLog?: (message: string) => void }
 export interface HandlerResponse { status: number; body: Record<string, unknown> }
 
 export function clientKey(headers: Headers) {
@@ -31,6 +31,8 @@ export async function handleReceptionist(rawBody: string, key: string, deps: Han
   const history = parseHistory(input.history);
   if (!slug || slug.length > 100 || !history) return { status: 400, body: { error: 'invalid' } };
   if (!deps.limiter.allow(key)) return { status: 429, body: { fallback: true } };
+  const usage = emptyUsage();
+  let outcome = 'fallback';
   try {
     const { data: workshop, error } = await deps.rpc('public_workshop_info', { p_slug: slug });
     if (error || !workshop) return { status: 404, body: { error: 'not_found' } };
@@ -41,12 +43,18 @@ export async function handleReceptionist(rawBody: string, key: string, deps: Han
       },
     };
     const info = workshop as { name: string; timezone: string };
-    const result = await runAgentTurn({ provider: deps.provider, executor, history, context: { workshopName: info.name, timezone: info.timezone, now: deps.now?.() ?? new Date() } });
+    const result = await runAgentTurn({ provider: deps.provider, executor, history, usage, context: { workshopName: info.name, timezone: info.timezone, now: deps.now?.() ?? new Date() } });
+    outcome = 'ok';
     return { status: 200, body: { history: result.history, reply: result.reply, proposal: result.proposal ?? null } };
   } catch (error) {
     // Provider down, budget used up, a loop that never ends: never an
     // internal detail to the visitor, just the guided form.
     if (!(error instanceof AgentError)) (deps.log ?? console.error)('[receptionist] ' + (error instanceof Error ? error.name + ': ' + error.message : 'error'));
     return { status: 200, body: { fallback: true } };
+  } finally {
+    // Only for a real model: calls and tokens of this turn, also when it
+    // failed halfway, to measure the cost per conversation (worst cases
+    // included). Never the conversation's content.
+    if (deps.provider.isRealAI && usage.calls + usage.failed_calls > 0) (deps.usageLog ?? console.info)(`[receptionist] uso: resultado=${outcome} llamadas=${usage.calls} fallidas=${usage.failed_calls} tokens_entrada=${usage.input_tokens} tokens_salida=${usage.output_tokens} mensajes_cliente=${history.filter(m => m.role === 'user').length}`);
   }
 }

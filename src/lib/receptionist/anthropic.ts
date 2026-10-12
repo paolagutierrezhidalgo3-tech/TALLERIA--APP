@@ -84,7 +84,7 @@ export class AnthropicProvider implements ReceptionistProvider {
     }
     // Never echo the provider's error body: it can carry request details.
     if (!response.ok) throw new ProviderError(`El proveedor de IA ha respondido con un error (${response.status}).`);
-    let body: { content?: unknown };
+    let body: { content?: unknown; usage?: { input_tokens?: unknown; output_tokens?: unknown } };
     try { body = await response.json(); } catch { throw new ProviderError('Respuesta del proveedor de IA no válida.'); }
     if (!Array.isArray(body.content)) throw new ProviderError('Respuesta del proveedor de IA no válida.');
     const text: string[] = [];
@@ -93,6 +93,7 @@ export class AnthropicProvider implements ReceptionistProvider {
       if (block.type === 'text' && typeof block.text === 'string') text.push(block.text);
       if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') tool_calls.push({ id: block.id, name: block.name, input: block.input });
     }
-    return { text: text.join('\n').trim(), tool_calls };
+    const tokens = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+    return { text: text.join('\n').trim(), tool_calls, usage: { input_tokens: tokens(body.usage?.input_tokens), output_tokens: tokens(body.usage?.output_tokens) } };
   }
 }

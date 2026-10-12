@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { newRequestsMessage } from './in-app-alerts';
+import { newAppointmentsMessage, newRequestsMessage } from './in-app-alerts';
 
 describe('newRequestsMessage', () => {
   it('no avisa hasta tener una referencia previa (primera carga de la sesión)', () => {
@@ -17,5 +17,18 @@ describe('newRequestsMessage', () => {
   });
   it('avisa en plural con el número exacto cuando llegan varias de golpe', () => {
     expect(newRequestsMessage(2, 5)).toBe('Han llegado 3 solicitudes nuevas.');
+  });
+});
+
+describe('newAppointmentsMessage (reservas de clientes desde el enlace público)', () => {
+  it('avisa cuando hay más citas próximas que en la última lectura', () => {
+    expect(newAppointmentsMessage(1, 2)).toBe('Hay una cita nueva en la agenda.');
+    expect(newAppointmentsMessage(1, 3)).toBe('Hay 2 citas nuevas en la agenda.');
+  });
+  it('no avisa sin referencia, sin dato, o si el recuento se mantiene o baja', () => {
+    expect(newAppointmentsMessage(null, 2)).toBeNull();
+    expect(newAppointmentsMessage(2, undefined)).toBeNull();
+    expect(newAppointmentsMessage(2, 2)).toBeNull();
+    expect(newAppointmentsMessage(2, 1)).toBeNull();
   });
 });

@@ -25,7 +25,7 @@ describe('proveedor real (Anthropic), sin llamadas reales', () => {
   it('envía modelo, límite de salida, reglas del sistema y solo las dos herramientas, con la clave en la cabecera', async () => {
     const fetcher = fakeFetch({ body: { content: [{ type: 'text', text: '¿Cómo te llamas?' }] } });
     const turn = await new AnthropicProvider(config, fetcher as unknown as typeof fetch).respond([{ role: 'user', content: 'hola' }], context);
-    expect(turn).toEqual({ text: '¿Cómo te llamas?', tool_calls: [] });
+    expect(turn).toEqual({ text: '¿Cómo te llamas?', tool_calls: [], usage: { input_tokens: 0, output_tokens: 0 } });
     const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     const headers = init.headers as Record<string, string>;
@@ -61,7 +61,7 @@ describe('proveedor real (Anthropic), sin llamadas reales', () => {
   it('lee las llamadas a herramientas de la respuesta', async () => {
     const fetcher = fakeFetch({ body: { content: [{ type: 'text', text: 'Miro las horas.' }, { type: 'tool_use', id: 'tu_1', name: 'check_availability', input: { part_of_day: 'tarde' } }] } });
     const turn = await new AnthropicProvider(config, fetcher as unknown as typeof fetch).respond([{ role: 'user', content: 'por la tarde' }], context);
-    expect(turn).toEqual({ text: 'Miro las horas.', tool_calls: [{ id: 'tu_1', name: 'check_availability', input: { part_of_day: 'tarde' } }] });
+    expect(turn).toEqual({ text: 'Miro las horas.', tool_calls: [{ id: 'tu_1', name: 'check_availability', input: { part_of_day: 'tarde' } }], usage: { input_tokens: 0, output_tokens: 0 } });
   });
 
   it('los errores del proveedor no exponen su respuesta y se convierten en ProviderError', async () => {
@@ -148,7 +148,9 @@ describe('endpoint de la recepcionista', () => {
   });
   it('con el proveedor simulado responde y solo usa las funciones públicas de lectura, con el slug de la conversación', async () => {
     rpc.mockClear();
-    const r = await handleReceptionist(raw(body()), 'ip', deps(new SimulatedProvider()));
+    const logs: string[] = [];
+    const r = await handleReceptionist(raw(body()), 'ip', { ...deps(new SimulatedProvider()), usageLog: (m: string) => logs.push(m) });
+    expect(logs).toEqual([]);
     expect(r.status).toBe(200);
     expect(String(r.body.reply)).toContain('1) mié, 14 oct, 10:00');
     expect(new Set(rpc.mock.calls.map(c => c[0]))).toEqual(new Set(['public_workshop_info', 'public_availability']));
@@ -175,16 +177,32 @@ describe('endpoint de la recepcionista', () => {
     const exhausted = withBudget(new SimulatedProvider(), new CallBudget(0));
     expect(await handleReceptionist(raw(body()), 'ip', deps(exhausted))).toEqual({ status: 200, body: { fallback: true } });
   });
+  it('un turno que falla a medias también registra los tokens ya gastados (bucle agotado y error tras una respuesta)', async () => {
+    const loop: ReceptionistProvider = { id: 'anthropic', isRealAI: true, respond: async () => ({ text: '', tool_calls: [{ id: 'x', name: 'check_availability', input: {} }], usage: { input_tokens: 1000, output_tokens: 50 } }) };
+    const logs: string[] = [];
+    expect(await handleReceptionist(raw(body()), 'ip', { ...deps(loop), usageLog: (m: string) => logs.push(m) })).toEqual({ status: 200, body: { fallback: true } });
+    expect(logs).toEqual(['[receptionist] uso: resultado=fallback llamadas=4 fallidas=0 tokens_entrada=4000 tokens_salida=200 mensajes_cliente=1']);
+    let i = 0;
+    const flaky: ReceptionistProvider = { id: 'anthropic', isRealAI: true, respond: async () => { if (i++ === 0) return { text: '', tool_calls: [{ id: 'y', name: 'check_availability', input: {} }], usage: { input_tokens: 900, output_tokens: 30 } }; throw new ProviderError('El proveedor de IA ha respondido con un error (529).'); } };
+    logs.length = 0;
+    await handleReceptionist(raw(body()), 'ip', { ...deps(flaky), usageLog: (m: string) => logs.push(m) });
+    expect(logs).toEqual(['[receptionist] uso: resultado=fallback llamadas=1 fallidas=1 tokens_entrada=900 tokens_salida=30 mensajes_cliente=1']);
+    expect(logs.join()).not.toContain('Marta');
+  });
   it('el proveedor real con un fetch simulado completa un turno con herramientas', async () => {
     const replies = [
-      { content: [{ type: 'tool_use', id: 'tu_1', name: 'check_availability', input: {} }] },
-      { content: [{ type: 'text', text: 'Tengo libre el miércoles a las 10:00. ¿Te va bien?' }] },
+      { content: [{ type: 'tool_use', id: 'tu_1', name: 'check_availability', input: {} }], usage: { input_tokens: 1200, output_tokens: 40 } },
+      { content: [{ type: 'text', text: 'Tengo libre el miércoles a las 10:00. ¿Te va bien?' }], usage: { input_tokens: 1500, output_tokens: 25 } },
     ];
     let i = 0;
     const fetcher = vi.fn(async () => new Response(JSON.stringify(replies[i++]), { status: 200 }));
     const provider = providerFor({ mode: 'anthropic', apiKey: 'k', dailyCallLimit: 10, model: 'm', maxOutputTokens: 100, timeoutMs: 1000 }, fetcher as unknown as typeof fetch)!;
-    const r = await handleReceptionist(raw(body([{ role: 'user', content: 'quiero cita' }])), 'ip', deps(provider));
+    const logs: string[] = [];
+    const r = await handleReceptionist(raw(body([{ role: 'user', content: 'quiero cita' }])), 'ip', { ...deps(provider), usageLog: (m: string) => logs.push(m) });
     expect(r.body.reply).toBe('Tengo libre el miércoles a las 10:00. ¿Te va bien?');
+    // Usage is logged for the cost measurement, never the conversation, and never sent to the browser.
+    expect(logs).toEqual(['[receptionist] uso: resultado=ok llamadas=2 fallidas=0 tokens_entrada=2700 tokens_salida=65 mensajes_cliente=1']);
+    expect(JSON.stringify(r.body)).not.toContain('tokens');
     expect(fetcher).toHaveBeenCalledTimes(2);
     const tool = (r.body.history as AgentMessage[]).find(m => m.role === 'tool');
     expect(JSON.parse(tool!.content).slots[0].starts_at).toBe('2026-10-14T08:00:00.000Z');

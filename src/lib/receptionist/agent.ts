@@ -23,7 +23,11 @@ export type AgentMessage =
   | { role: 'user'; content: string }
   | { role: 'assistant'; content: string; tool_calls?: ToolCall[] }
   | { role: 'tool'; tool_call_id: string; name: string; content: string };
-export interface ProviderTurn { text: string; tool_calls: ToolCall[] }
+/** usage: tokens the provider reports for this call (real models only). */
+export interface ProviderTurn { text: string; tool_calls: ToolCall[]; usage?: { input_tokens: number; output_tokens: number } }
+/** failed_calls: provider calls that threw (their tokens, if any, are unknown). */
+export interface TurnUsage { calls: number; failed_calls: number; input_tokens: number; output_tokens: number }
+export const emptyUsage = (): TurnUsage => ({ calls: 0, failed_calls: 0, input_tokens: 0, output_tokens: 0 });
 export interface AgentContext { workshopName: string; timezone: string; now: Date }
 export interface ReceptionistProvider {
   readonly id: 'simulated' | 'anthropic';
@@ -37,7 +41,7 @@ export interface ToolExecutor { availability(): Promise<PublicAvailability | nul
 /** timezone: the workshop's, from the same availability the slot came
  * from, so the review shows the hour exactly as it will be booked. */
 export interface Proposal { data: Intake; slot?: string; timezone?: string }
-export interface AgentResult { history: AgentMessage[]; reply: string; proposal?: Proposal }
+export interface AgentResult { history: AgentMessage[]; reply: string; proposal?: Proposal; usage: TurnUsage }
 
 export const LIMITS = { userTurns: 20, historyEntries: 80, userChars: 2000, assistantChars: 4000, toolChars: 20000, toolInputChars: 2000, historyChars: 64000, bodyBytes: 100000, steps: 4, slotsShown: 8 } as const;
 export class AgentError extends Error {}
@@ -96,16 +100,20 @@ async function proposeRequest(input: unknown, executor: ToolExecutor, context: A
 
 /** One customer message in, the provider's reply out: runs the provider and
  * the tools it asks for, up to LIMITS.steps model calls. */
-export async function runAgentTurn({ provider, executor, history, context }: { provider: ReceptionistProvider; executor: ToolExecutor; history: AgentMessage[]; context: AgentContext }): Promise<AgentResult> {
+/** usage: optional accumulator owned by the caller, so the tokens already
+ * spent are still known when the turn ends in an error. */
+export async function runAgentTurn({ provider, executor, history, context, usage = emptyUsage() }: { provider: ReceptionistProvider; executor: ToolExecutor; history: AgentMessage[]; context: AgentContext; usage?: TurnUsage }): Promise<AgentResult> {
   const next = [...history];
   let proposal: Proposal | undefined;
   for (let step = 0; step < LIMITS.steps; step++) {
-    const turn = await provider.respond(next, context);
+    let turn: ProviderTurn;
+    try { turn = await provider.respond(next, context); } catch (error) { usage.failed_calls++; throw error; }
+    usage.calls++; usage.input_tokens += turn.usage?.input_tokens ?? 0; usage.output_tokens += turn.usage?.output_tokens ?? 0;
     const calls = turn.tool_calls.slice(0, 3);
     next.push({ role: 'assistant', content: turn.text.slice(0, LIMITS.assistantChars), ...(calls.length ? { tool_calls: calls } : {}) });
     if (calls.length === 0) {
       if (!turn.text.trim()) throw new AgentError('El proveedor no ha respondido.');
-      return { history: next, reply: turn.text, ...(proposal ? { proposal } : {}) };
+      return { history: next, reply: turn.text, usage, ...(proposal ? { proposal } : {}) };
     }
     for (const call of calls) {
       let content: string;

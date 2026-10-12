@@ -1,4 +1,4 @@
-import { ANONYMIZED_MARKER, type State, type Resource } from './domain';
+import { ANONYMIZED_MARKER, type State, type Resource, type WorkshopHourRange } from './domain';
 import { eraseCustomerPersonalData, isAnonymizedCustomer } from './erasure';
 import { tryNormalizePhone } from './phone';
 // Mirrors public.slugify + generate_workshop_slug: lowercase, strip
@@ -66,14 +66,30 @@ function upgradeToV5(source: State): State {
   state.workshop.hours_version ??= 1;
   return state;
 }
-export const DEMO_SCHEMA_VERSION = 6;
-export function upgradeDemo(source: State): State {
-  if (source.schema_version === DEMO_SCHEMA_VERSION) return source;
+function upgradeToV6(source: State): State {
+  if (source.schema_version === 6) return source;
   const state = structuredClone(upgradeToV5(source));
-  state.schema_version = DEMO_SCHEMA_VERSION;
+  state.schema_version = 6;
   // Same backfill as migration 015: customers anonymized before the history
   // was scrubbed too still had their personal data in conversations and in
   // request/appointment free text.
   for (const c of state.customers) if (isAnonymizedCustomer(c, ANONYMIZED_MARKER)) eraseCustomerPersonalData(state, c.id);
+  return state;
+}
+/** The demo workshop's sample schedule (Monday to Friday, 09:00-14:00 and
+ * 16:00-19:00), matching its free-text hours. */
+export function sampleWorkshopHours(): WorkshopHourRange[] {
+  return [1, 2, 3, 4, 5].flatMap(day_of_week => [{ day_of_week, opens_at: '09:00', closes_at: '14:00' }, { day_of_week, opens_at: '16:00', closes_at: '19:00' }]);
+}
+export const DEMO_SCHEMA_VERSION = 7;
+export function upgradeDemo(source: State): State {
+  if (source.schema_version === DEMO_SCHEMA_VERSION) return source;
+  const state = structuredClone(upgradeToV6(source));
+  state.schema_version = DEMO_SCHEMA_VERSION;
+  // Demos saved before the sample schedule existed never had structured
+  // hours, so their public link offered no slots to book. Only when the
+  // schedule was never configured (undefined): never over one the owner
+  // saved, not even an empty one.
+  state.hours ??= sampleWorkshopHours();
   return state;
 }
