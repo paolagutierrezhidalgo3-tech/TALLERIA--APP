@@ -1927,3 +1927,49 @@ Despliegue: Vercel correcto para `486e426`
 Bloqueos o limitaciones: ninguno salvo las autorizaciones y la copia de emergencia de la clave
 Próximo paso exacto: a decisión del usuario -- exportar la clave a su gestor de contraseñas, autorizar el commit del cifrado y autorizar la primera copia real: `node scripts/backup-database.mjs %USERPROFILE%\TALLERIA-COPIAS-PRIVADO\copias`
 ```
+
+```text
+Fecha: 12 de octubre de 2026
+Rama y HEAD comprobados: main, HEAD `c43e458` (cifrado de copias), igual a `origin/main`; en el árbol, sin confirmar: órdenes de la clave en `scripts/backup-database.mjs`, `docs/copia-seguridad.md` y esta entrada
+Bloque actual y alcance: preparación y protección de la clave de recuperación; sin copia real de producción
+Estado: código validado; la copia de emergencia de la clave depende de la usuaria (por diseño)
+Hecho en esta sesión: (1) Comprobación de la clave real (sin mostrarla): existe, DPAPI la abre, 32 bytes, identificador 03a20ae715817910, el archivo no la contiene en claro, permisos solo de la usuaria y SYSTEM con la carpeta protegida contra herencia, fuera del repositorio y de OneDrive, ninguna clave en el repositorio; historial y nube del portapapeles de Windows desactivados. (2) Nuevas órdenes: `--export-key` ya no imprime la clave: la copia al portapapeles con los formatos que excluyen el historial y la nube, y la borra a los 60 s (o con Ctrl+C) comparando y vaciando bajo una misma apertura exclusiva (Win32), sin borrar nunca lo que se copie después, distinguiendo texto ausente de errores de lectura, con reintentos unos 10 s y aviso honesto (código 1) si no puede confirmarlo; `--check-key-copy` comprueba la copia del gestor de contraseñas con entrada oculta; `--check-key` es la comprobación desatendida (solo muestra el identificador). Las dos primeras solo funcionan en una terminal interactiva; la clave nunca va en argumentos, salida, archivos ni historial. (3) Ensayos con claves de prueba desechables simulando una terminal: la clave llega al portapapeles y nunca aparece en la salida; se borra al final; se respeta lo copiado después; portapapeles bloqueado por otro programa (con ventana) más tiempo que los reintentos: aviso y código 1, y la clave seguía (aviso cierto); bloqueo corto: se borra al liberarse; comprobación de la copia: acepta la correcta y rechaza incorrecta e incompleta sin mostrarlas; las dos órdenes se niegan desde herramientas automáticas. Hallazgo de la prueba: un bloqueador que abre el portapapeles sin ventana no impide a otros procesos abrirlo; la prueba usa una ventana oculta, como un programa real. (4) Codex (solo lectura): ronda 1 (alto: el borrado podía fallar y anunciarse como hecho) -- corregido; ronda 2 (medio: comparar y borrar no era atómico) -- corregido con Win32; ronda 3 (medio: un fallo de lectura se tomaba como cambio) -- corregido; **ronda 4 "approve", sin hallazgos**
+Decisiones confirmadas: ninguna copia real sin autorización; la clave nunca se muestra en la conversación
+Archivos principales: `scripts/backup-database.mjs`, `docs/copia-seguridad.md`, `TALLERIA_PLAN_MAESTRO_FINAL.md`
+Pendientes concretos y hallazgos menores: (a) la usuaria guarda la clave en su gestor (`--export-key`) y la comprueba (`--check-key-copy`) en una terminal propia; (b) commit de estos cambios; (c) primera copia real con autorización; (d) frecuencia y conservación de las copias
+Migraciones preparadas (identificador y finalidad): 019 y 020 en `main`, solo en TEST
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no dada
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna nueva
+Tests: `pnpm test` 505 pasados y 3 omitidos
+Typecheck / Lint / Build: typecheck y lint correctos (el script sin avisos)
+Pruebas manuales: solo la exportación y comprobación de la clave, que por diseño hace la usuaria
+Revisión de Codex: punto (4)
+Commit de cierre confirmado: pendiente de autorización
+Push: pendiente
+Despliegue: no aplica
+Bloqueos o limitaciones: ninguno salvo las autorizaciones y el paso (a)
+Próximo paso exacto: paso (a) de la usuaria; después, commit y primera copia real con autorización
+```
+
+```text
+Fecha: 12 de octubre de 2026
+Rama y HEAD comprobados: main, HEAD `c43e458`, igual a `origin/main`; en el árbol, sin confirmar: `scripts/backup-database.mjs`, `docs/copia-seguridad.md` y los dos últimos checkpoints
+Bloque actual y alcance: primera copia real de producción, cifrada y verificada, sin restaurar ni modificar producción (autorizada por la usuaria tras guardar la clave en Bitwarden y comprobarla con --check-key-copy)
+Estado: activado (copias reales hechas y verificadas)
+Hecho en esta sesión: (1) Comprobaciones previas (solo lectura): clave correcta (03a20ae715817910), Docker en marcha con la imagen fijada, conexión a producción por el pooler de sesión, destino restringido, PostgreSQL 17.6, 12 MB, sin sesiones activas ni transacciones abiertas, 0 secretos en vault, 0 objetos en Storage, 0 objetos grandes, las tablas de public/auth legibles. (2) Problemas encontrados con los datos reales y corregidos (todos de la restauración de prueba local; producción solo se leyó): (a) `roles.sql` menciona roles de la plataforma que la imagen local no tiene (`supabase_realtime_admin`): el contenedor de prueba crea como roles NOLOGIN vacíos los que se mencionan sin crearse; (b) el volcado de datos incluye el esquema `storage` (8 tablas): auth y storage se tratan como esquemas de plataforma (`platform-pre.sql`, `platform-post.sql`, `custom-triggers.sql`; huellas de contenido, estructura, permisos, políticas y triggers que incluyen storage); (c) `auth.oauth_clients` tiene en producción huecos de columnas borradas: la huella de estructura usa la posición de la columna y no `attnum` (comprobado: las 850 entradas coinciden). (3) INCIDENTE: en un intento, un filtro de salida mal escrito rompió la tubería y el proceso murió sin su limpieza, dejando los volcados en claro en la carpeta privada (con acceso restringido); se borraron de inmediato (pueden seguir recuperables en el disco hasta sobrescribirse). Corregido: se ignoran los errores de escritura en consola; una limpieza de emergencia (manejador de 'exit' y de señales) borra los archivos en claro de la copia en curso, el temporal de verificación, el contenedor de restauración (solo se desregistra tras confirmar su borrado) y el portapapeles de --export-key. Ensayado con datos y claves ficticios: tubería rota, fallo abrupto en mitad del volcado, Ctrl+C justo tras cargar los datos en el contenedor, Ctrl+C durante --export-key y docker rm fallido: en todos los casos ningún dato en claro ni contenedor restante. Las copias de intentos fallidos (solo diagnóstico cifrado) se retiraron. (4) Copias reales en `%USERPROFILE%\TALLERIA-COPIAS-PRIVADO\copias`: `talleria-20261012T080929Z` y `talleria-20261012T090408Z` (esta, con el script definitivo): 46 tablas, 53 filas, 7 archivos cifrados con la clave 03a20ae715817910; restauración de prueba idéntica al origen (estructura, secuencias, funciones, permisos, RLS, políticas y triggers); `--verify` repetido correcto; descifrado con los 7 archivos iguales al manifiesto (carpeta descifrada borrada); permisos solo de la usuaria y SYSTEM; producción sin cambios (mismos recuentos antes y después); nada en el repositorio. (5) Codex (solo lectura): señaló la falta de limpieza del contenedor ante señales, el Ctrl+C de --export-key y el borrado no comprobado del contenedor -- corregidos; **última ronda "approve", sin hallazgos**. (6) Tras un corte de la sesión (reinicio del equipo) se arrancó Docker Desktop y se borraron dos contenedores de prueba con datos ficticios que habían quedado
+Decisiones confirmadas: copia real autorizada por la usuaria (12 de octubre de 2026); ninguna restauración sobre producción
+Archivos principales: `scripts/backup-database.mjs`, `docs/copia-seguridad.md`, `TALLERIA_PLAN_MAESTRO_FINAL.md`
+Pendientes concretos y hallazgos menores: commit de estos cambios; decidir frecuencia y conservación de las copias (hay dos del mismo día); decidir 019 y 020 en producción ahora que existe una copia válida
+Migraciones preparadas (identificador y finalidad): 019 y 020 en `main`, solo en TEST
+Confirmación explícita del usuario para aplicación real (referencia y alcance): no dada para migraciones
+Migraciones aplicadas/verificadas en Supabase real y evidencia sin secretos: ninguna nueva
+Tests: `pnpm test` 505 pasados y 3 omitidos
+Typecheck / Lint / Build: typecheck y lint correctos (el script sin avisos)
+Pruebas manuales: ninguna (la usuaria guardó y comprobó la clave)
+Revisión de Codex: punto (5)
+Commit de cierre confirmado: pendiente de autorización
+Push: pendiente
+Despliegue: no aplica
+Bloqueos o limitaciones: ninguno
+Próximo paso exacto: a decisión de la usuaria -- autorizar el commit; decidir conservación de copias; después, 019 y 020 en producción con autorización expresa
+```

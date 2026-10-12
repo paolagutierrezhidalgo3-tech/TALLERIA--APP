@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// ESTADO (11 de octubre de 2026): ensayado solo en local con datos
-// ficticios (restauración idéntica al origen). La primera copia real de
-// producción requiere autorización expresa. Procedimiento completo en
-// docs/copia-seguridad.md.
+// ESTADO (12 de octubre de 2026): en uso; primera copia real de producción
+// hecha y verificada. Procedimiento completo en docs/copia-seguridad.md.
 //
 // Full logical backup of the Supabase Postgres database named by
 // TALLERIA_DB_URL, plus an automatic restore test. Read-only against the
@@ -17,9 +15,16 @@
 // Usage:
 //   node scripts/backup-database.mjs --init-key                once: create the
 //                                                             encryption key
-//   node scripts/backup-database.mjs --export-key              show the key for
-//                                                             the password manager
+//   node scripts/backup-database.mjs --export-key              copy the key to the
+//                                                             clipboard for the
+//                                                             password manager, never
+//                                                             shown, cleared after 60 s
 //                                                             (interactive terminal)
+//   node scripts/backup-database.mjs --check-key-copy          check the copy kept in
+//                                                             the password manager
+//                                                             (hidden input, terminal)
+//   node scripts/backup-database.mjs --check-key               unattended check of the
+//                                                             protected key
 //   node scripts/backup-database.mjs <destination-folder>      backup + verify +
 //                                                             encrypt
 //   node scripts/backup-database.mjs --verify <backup-folder>  verify again
@@ -40,18 +45,21 @@
 //                                     anon/authenticated by default when each
 //                                     object is created, so without this a
 //                                     restore would be more permissive
-//   auth-pre.sql, auth-post.sql       structure of the auth schema (pg_dump
-//                                     pre-data / post-data, without the
-//                                     custom triggers), for a full restore
-//                                     outside Supabase and for the test
-//   custom-auth-triggers.sql          triggers on auth.users that call public
-//                                     functions (not in schema.sql, which
-//                                     leaves out the auth schema)
+//   platform-pre.sql, platform-post.sql
+//                                     structure of the platform schemas auth
+//                                     and storage (pg_dump pre-data /
+//                                     post-data, without the custom
+//                                     triggers), for a full restore outside
+//                                     Supabase and for the test
+//   custom-triggers.sql               triggers on auth/storage tables that
+//                                     call public functions (not in
+//                                     schema.sql, which leaves out those
+//                                     schemas)
 //   manifest.json                     sha256 of every file and fingerprints
 // After the restore test passes, every .sql file is encrypted to <name>.enc
 // and the plaintext is deleted; manifest.json (hashes only) stays readable.
-// Restore order (see docs/copia-seguridad.md): roles, [auth-pre, auth-post
-// only outside Supabase], schema, custom-auth-triggers, acl, then data with
+// Restore order (see docs/copia-seguridad.md): roles, [platform-pre,
+// platform-post only outside Supabase], schema, custom-triggers, acl, then data with
 // session_replication_role = replica.
 import { spawnSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
@@ -79,6 +87,9 @@ const keyFile = opt('--key-file') ?? join(homedir(), 'TALLERIA-COPIAS-PRIVADO', 
 const keyEnv = opt('--key-env');
 const initKey = flag('--init-key');
 const exportKey = flag('--export-key');
+const checkKeyCopyFlag = flag('--check-key-copy');
+const checkKeyFlag = flag('--check-key');
+const clipboardSeconds = opt('--clipboard-seconds');
 const keepContainer = flag('--keep-container');
 const destination = args[0];
 
@@ -86,6 +97,17 @@ const destination = args[0];
 // in particular the one that removes the restore container -- always runs.
 class Stop extends Error {}
 const fail = msg => { throw new Stop(msg); };
+
+// Emergency cleanup: if the process ends abruptly (uncaught error, Ctrl+C,
+// closed window), remove any plaintext it was holding. A broken console pipe
+// must not kill the process before its own cleanup runs, so write errors on
+// stdout/stderr are ignored.
+const emergency = new Map();
+process.on('exit', () => { for (const fn of emergency.values()) { try { fn(); } catch { /* best effort */ } } });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) process.on(sig, () => process.exit(130));
+process.stdout.on('error', () => {});
+process.stderr.on('error', () => {});
+const removePlaintext = dir => { if (existsSync(dir)) for (const f of readdirSync(dir)) if (!f.endsWith('.enc')) rmSync(join(dir, f), { recursive: true, force: true }); };
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 let redact = s => String(s);
 
@@ -167,10 +189,138 @@ function createKey() {
   console.log(`✔ Clave de cifrado creada y protegida con DPAPI en ${keyFile} (identificador ${keyId(key)}).`);
   console.log('  Guarda una copia para emergencias en tu gestor de contraseñas con --export-key, desde una terminal tuya.');
 }
-function showKey() {
-  if (!process.stdout.isTTY || !process.stdin.isTTY) fail('Por seguridad, --export-key solo muestra la clave en una terminal interactiva abierta por ti (no en herramientas automáticas ni redirigida a un archivo).');
+const requireTerminal = what => {
+  if (!process.stdout.isTTY || !process.stdin.isTTY) fail(`Por seguridad, ${what} solo funciona en una terminal interactiva abierta por ti (no en herramientas automáticas ni redirigida a un archivo).`);
+};
+
+// Clipboard through PowerShell (STA). The key travels by stdin, never as an
+// argument. The data object carries the formats Windows documents for
+// password managers, so clipboard history and cloud clipboard skip it.
+function clipboard(script, input) {
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; $k = [Console]::In.ReadToEnd().Trim(); ${script}`], { input, encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+const COPY_PS = `$no = { New-Object System.IO.MemoryStream(,[byte[]](0,0,0,0)) };
+  $d = New-Object System.Windows.Forms.DataObject;
+  $d.SetData([System.Windows.Forms.DataFormats]::UnicodeText, $k);
+  $d.SetData('ExcludeClipboardContentFromMonitorProcessing', (& $no));
+  $d.SetData('CanIncludeInClipboardHistory', (& $no));
+  $d.SetData('CanUploadToCloudClipboard', (& $no));
+  [System.Windows.Forms.Clipboard]::SetDataObject($d, $true); 'ok'`;
+// Compare and clear under one exclusive opening of the clipboard (Win32), so
+// nothing copied in between can be erased. Returns borrado, cambiado or error.
+const CLEAR_PS = `Add-Type -Language CSharp -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class TalleriaClip {
+  [DllImport("user32.dll")] static extern bool OpenClipboard(IntPtr h);
+  [DllImport("user32.dll")] static extern bool CloseClipboard();
+  [DllImport("user32.dll")] static extern bool EmptyClipboard();
+  [DllImport("user32.dll")] static extern IntPtr GetClipboardData(uint f);
+  [DllImport("user32.dll")] static extern bool IsClipboardFormatAvailable(uint f);
+  [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr h);
+  [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr h);
+  public static string ClearIfEquals(string k) {
+    if (!OpenClipboard(IntPtr.Zero)) return "error";
+    try {
+      // No text at all: the key was replaced. Text that cannot be read is an
+      // error (retried), never a confirmation.
+      if (!IsClipboardFormatAvailable(13)) return "cambiado";
+      IntPtr h = GetClipboardData(13); if (h == IntPtr.Zero) return "error";
+      IntPtr p = GlobalLock(h); if (p == IntPtr.Zero) return "error";
+      string t; try { t = Marshal.PtrToStringUni(p); } finally { GlobalUnlock(h); }
+      if (t != k) return "cambiado";
+      return EmptyClipboard() ? "borrado" : "error";
+    } finally { CloseClipboard(); }
+  }
+}
+'@
+[TalleriaClip]::ClearIfEquals($k)`;
+// Clears the key from the clipboard, retrying while another program holds
+// it. Returns true only once the key is confirmed gone (cleared, or replaced
+// by something the user copied).
+function clearKeyFromClipboard(key) {
+  // At least two attempts, then keep trying for about 10 seconds in total.
+  const deadline = Date.now() + 10_000;
+  for (let attempt = 0; attempt < 2 || Date.now() < deadline; attempt++) {
+    const r = clipboard(CLEAR_PS, key);
+    if (r === 'borrado' || r === 'cambiado') return true;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
+  return false;
+}
+const CLEAR_FAILED = 'No se pudo confirmar que el portapapeles se haya borrado (otro programa lo está usando). Copia cualquier otro texto ahora mismo para sustituir la clave.';
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Copies the key to the clipboard for the password manager, never printing
+// it, and clears it after a short time.
+async function exportKeyToClipboard() {
+  requireTerminal('--export-key');
+  if (process.platform !== 'win32') fail('--export-key usa el portapapeles de Windows.');
+  const key = loadKey().toString('base64');
+  const seconds = Math.max(5, Number(clipboardSeconds ?? 60) || 60);
+  if (clipboard(COPY_PS, key) !== 'ok') fail('No se pudo copiar la clave al portapapeles.');
+  let done = false;
+  const clear = () => { if (done) return true; done = clearKeyFromClipboard(key); return done; };
+  // Registered as emergency cleanup right after copying: Ctrl+C, a closed
+  // window or any error clears the clipboard before the process ends. It is
+  // dropped only once the clearing is confirmed.
+  emergency.set('portapapeles', () => { if (!done) console.log(clear() ? '\n✔ Portapapeles borrado.' : '\n✘ ' + CLEAR_FAILED); });
+  console.log(`✔ Clave de recuperación (identificador ${keyId(loadKey())}) copiada al portapapeles, sin mostrarla.`);
+  console.log('  Pégala ahora (Ctrl+V) en tu gestor de contraseñas, en una entrada nueva llamada "TALLERIA - clave de copias".');
+  for (let s = seconds; s > 0; s--) { process.stdout.write(`\r  El portapapeles se borrará en ${String(s).padStart(2)} s (Ctrl+C para borrarlo ya)…`); await sleep(1000); }
+  if (!clear()) { process.stdout.write('\n'); fail(CLEAR_FAILED); }
+  emergency.delete('portapapeles');
+  console.log('\r✔ Portapapeles borrado.                                              ');
+  console.log('  Ahora comprueba la copia guardada con: node scripts/backup-database.mjs --check-key-copy');
+}
+
+// Reads a line without echoing it (for pasting the key back).
+function readHidden(prompt) {
+  return new Promise((resolveLine, reject) => {
+    process.stdout.write(prompt);
+    const stdin = process.stdin;
+    let value = '';
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    const done = err => {
+      stdin.setRawMode(false); stdin.pause(); stdin.removeListener('data', onData); process.stdout.write('\n');
+      // Let the process exit once the line is read.
+      if (typeof stdin.unref === 'function') stdin.unref();
+      if (err) reject(err); else resolveLine(value);
+    };
+    const onData = chunk => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') return done();
+        if (ch === '\u0003') return done(new Stop('Cancelado.'));
+        if (ch === '\u0008' || ch === '\u007f') value = value.slice(0, -1);
+        else if (ch >= ' ') value += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+// Checks the copy kept in the password manager against the protected key,
+// without showing either.
+async function checkKeyCopy() {
+  requireTerminal('--check-key-copy');
   const key = loadKey();
-  console.log(`Identificador: ${keyId(key)}\nClave (cópiala en tu gestor de contraseñas y no la compartas):\n${key.toString('base64')}`);
+  const pasted = (await readHidden('Pega la clave desde tu gestor de contraseñas (Ctrl+V; no se verá) y pulsa Intro: ')).trim();
+  const copy = Buffer.from(pasted, 'base64');
+  if (copy.length === 32 && copy.equals(key)) console.log(`✔ La copia de tu gestor de contraseñas es correcta (identificador ${keyId(key)}). Ya puedes abrir las copias aunque se pierda este equipo.`);
+  else fail('La copia pegada NO coincide con la clave de las copias. Vuelve a ejecutar --export-key y guarda de nuevo la clave.');
+}
+
+// Unattended health check of the protected key (shows only its identifier).
+function checkKey() {
+  const abs = physical(keyFile);
+  const key = loadKey();
+  const sealed = readFileSync(keyFile, 'utf8');
+  if (sealed.includes(key.toString('base64'))) fail('El archivo de la clave contiene la clave sin proteger.');
+  if (inside(physical(repoRoot), abs)) fail('La clave está dentro del repositorio.');
+  for (const v of ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial']) if (process.env[v] && inside(physical(process.env[v]), abs)) fail('La clave está dentro de OneDrive.');
+  console.log(`✔ Clave de cifrado correcta: existe, la abre DPAPI, 32 bytes, identificador ${keyId(key)}, fuera del repositorio y de OneDrive.`);
 }
 
 // Encrypts the verified plaintext files, checks each one decrypts back to the
@@ -274,14 +424,14 @@ function pgDump(file, extra) {
 // identically. ACLs are compared as sorted grantee=privilege lists with the
 // default ACL filled in, so neither entry order nor NULL-vs-explicit matters.
 const TABLES_SQL = `select n.nspname as s, c.relname as t from pg_class c join pg_namespace n on n.oid = c.relnamespace
-  where c.relkind in ('r', 'p') and n.nspname in ('public', 'auth') and not (n.nspname = 'auth' and c.relname = 'schema_migrations') order by 1, 2`;
+  where c.relkind in ('r', 'p') and n.nspname in ('public', 'auth', 'storage') and not (n.nspname = 'auth' and c.relname = 'schema_migrations') and not (n.nspname = 'storage' and c.relname = 'migrations') order by 1, 2`;
 const quote = id => '"' + id.replace(/"/g, '""') + '"';
 // Sequences of public and auth; their state is read from each sequence
 // (pg_sequences.last_value is NULL whenever is_called is false).
-const SEQUENCES_SQL = `select n.nspname as s, c.relname as t from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'S' and n.nspname in ('public', 'auth') order by 1, 2`;
+const SEQUENCES_SQL = `select n.nspname as s, c.relname as t from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'S' and n.nspname in ('public', 'auth', 'storage') order by 1, 2`;
 const aclNorm = (acl, kind, owner) => `(select coalesce(string_agg(e, ',' order by e), '') from (select case when a.grantee = 0 then 'PUBLIC' else pg_catalog.pg_get_userbyid(a.grantee) end || '=' || a.privilege_type || case when a.is_grantable then '*' else '' end as e from pg_catalog.aclexplode(coalesce(${acl}, pg_catalog.acldefault(${kind}, ${owner}))) a) z)`;
 const RELKINDS = `('r', 'p', 'v', 'm', 'S', 'f')`;
-const SCHEMAS = `('public'::regnamespace, 'auth'::regnamespace)`;
+const SCHEMAS = `('public'::regnamespace, 'auth'::regnamespace, 'storage'::regnamespace)`;
 function fingerprintSql(tables, sequences) {
   const seqParts = sequences.map(({ s, t }) => `select '${s}.${t}' as k, last_value::text || ':' || is_called as v from ${quote(s)}.${quote(t)}`);
   const parts = tables.map(({ s, t }) =>
@@ -292,10 +442,12 @@ function fingerprintSql(tables, sequences) {
     'permisos', (select md5(coalesce(string_agg(c.oid::regclass::text || ':' || c.relkind::text || ':' || pg_get_userbyid(c.relowner) || ':' || ${aclNorm('c.relacl', "(case when c.relkind = 'S' then 's' else 'r' end)::\"char\"", 'c.relowner')}, ',' order by c.oid::regclass::text), '')) from pg_class c where c.relnamespace in ${SCHEMAS} and c.relkind in ${RELKINDS}),
     'permisos_columnas', (select md5(coalesce(string_agg(c.oid::regclass::text || '.' || a.attname || ':' || a.attacl::text, ',' order by c.oid::regclass::text, a.attname), '')) from pg_attribute a join pg_class c on c.oid = a.attrelid where c.relnamespace in ${SCHEMAS} and a.attacl is not null and not a.attisdropped),
     'rls', (select md5(coalesce(string_agg(c.oid::regclass::text || ':' || c.relrowsecurity || ':' || c.relforcerowsecurity, ',' order by c.oid::regclass::text), '')) from pg_class c where c.relnamespace in ${SCHEMAS} and c.relkind in ('r', 'p')),
-    'permisos_esquemas', (select string_agg(n.nspname || '=' || ${aclNorm('n.nspacl', "'n'::\"char\"", 'n.nspowner')}, ';' order by n.nspname) from pg_namespace n where n.nspname in ('public', 'auth')),
-    'politicas', (select md5(coalesce(string_agg(schemaname || '.' || tablename || ':' || policyname || ':' || permissive || ':' || array_to_string(roles, ',') || ':' || cmd || ':' || coalesce(qual, '') || ':' || coalesce(with_check, ''), ',' order by schemaname, tablename, policyname), '')) from pg_policies where schemaname in ('public', 'auth')),
+    'permisos_esquemas', (select string_agg(n.nspname || '=' || ${aclNorm('n.nspacl', "'n'::\"char\"", 'n.nspowner')}, ';' order by n.nspname) from pg_namespace n where n.nspname in ('public', 'auth', 'storage')),
+    'politicas', (select md5(coalesce(string_agg(schemaname || '.' || tablename || ':' || policyname || ':' || permissive || ':' || array_to_string(roles, ',') || ':' || cmd || ':' || coalesce(qual, '') || ':' || coalesce(with_check, ''), ',' order by schemaname, tablename, policyname), '')) from pg_policies where schemaname in ('public', 'auth', 'storage')),
+    -- Column position, not attnum: a restored table has no gaps left by
+    -- columns dropped long ago (seen in auth.oauth_clients).
     'estructura', (select md5(coalesce(string_agg(x, E'\\n' order by x), '')) from (
-        select 'columna:' || c.oid::regclass::text || '.' || a.attname || ':' || a.attnum || ':' || format_type(a.atttypid, a.atttypmod) || ':' || a.attnotnull || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '') || ':' || a.attidentity::text || ':' || a.attgenerated::text as x
+        select 'columna:' || c.oid::regclass::text || '.' || a.attname || ':' || (row_number() over (partition by a.attrelid order by a.attnum))::text || ':' || format_type(a.atttypid, a.atttypmod) || ':' || a.attnotnull || ':' || coalesce(pg_get_expr(d.adbin, d.adrelid), '') || ':' || a.attidentity::text || ':' || a.attgenerated::text as x
           from pg_attribute a join pg_class c on c.oid = a.attrelid left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
           where c.relnamespace in ${SCHEMAS} and c.relkind in ('r', 'p', 'v', 'm', 'f') and a.attnum > 0 and not a.attisdropped
         union all select 'restriccion:' || conrelid::regclass::text || ':' || conname || ':' || pg_get_constraintdef(oid) || ':' || convalidated from pg_constraint where connamespace in ${SCHEMAS}
@@ -304,9 +456,10 @@ function fingerprintSql(tables, sequences) {
         union all select 'vista:' || c.oid::regclass::text || ':' || pg_get_viewdef(c.oid) from pg_class c where c.relnamespace in ${SCHEMAS} and c.relkind in ('v', 'm')
         union all select 'tipo:' || t.oid::regtype::text || ':' || t.typtype::text || ':' || coalesce((select string_agg(enumlabel, ',' order by enumsortorder) from pg_enum where enumtypid = t.oid), '') from pg_type t where t.typnamespace in ${SCHEMAS} and t.typtype in ('e', 'd')
       ) s),
-    'secuencias', (select coalesce(json_object_agg(schemaname || '.' || sequencename, data_type || ':' || start_value || ':' || increment_by || ':' || min_value || ':' || max_value || ':' || cycle || ':' || coalesce(last_value::text, 'sin usar')), '{}') from pg_sequences where schemaname in ('public', 'auth')),
+    'secuencias', (select coalesce(json_object_agg(schemaname || '.' || sequencename, data_type || ':' || start_value || ':' || increment_by || ':' || min_value || ':' || max_value || ':' || cycle || ':' || coalesce(last_value::text, 'sin usar')), '{}') from pg_sequences where schemaname in ('public', 'auth', 'storage')),
     'estado_secuencias', ${seqParts.length ? `(select json_object_agg(k, v) from (${seqParts.join(' union all ')}) q)` : "'{}'::json"},
     'triggers_auth_users', (select coalesce(json_agg(tgname order by tgname), '[]') from pg_trigger where tgrelid = 'auth.users'::regclass and not tgisinternal),
+    'triggers_plataforma', (select coalesce(json_agg(t.tgrelid::regclass::text || '.' || t.tgname order by t.tgrelid::regclass::text, t.tgname), '[]') from pg_trigger t join pg_class c on c.oid = t.tgrelid where c.relnamespace in ('auth'::regnamespace, 'storage'::regnamespace) and not t.tgisinternal),
     'version', current_setting('server_version'))::text as j`;
 }
 
@@ -343,7 +496,8 @@ async function readSource() {
     const sequences = (await c.query(SEQUENCES_SQL)).rows;
     const fp = JSON.parse((await c.query(fingerprintSql(tables, sequences))).rows[0].j);
     const triggers = (await c.query(`select pg_get_triggerdef(t.oid) || ';' as d from pg_trigger t join pg_proc p on p.oid = t.tgfoid
-      where t.tgrelid = 'auth.users'::regclass and not t.tgisinternal and p.pronamespace = 'public'::regnamespace order by t.tgname`)).rows.map(r => r.d);
+      join pg_class c on c.oid = t.tgrelid
+      where c.relnamespace in ('auth'::regnamespace, 'storage'::regnamespace) and not t.tgisinternal and p.pronamespace = 'public'::regnamespace order by t.tgrelid::regclass::text, t.tgname`)).rows.map(r => r.d);
     const acl = (await c.query(ACL_SQL)).rows.map(r => r.stmt);
     await c.query('commit');
     return { fp, triggers, acl };
@@ -357,6 +511,9 @@ function restoreAndFingerprint(dir, manifest, logDir) {
   const password = randomBytes(18).toString('hex');
   const run = docker(['run', '-d', '--name', name, '-e', 'POSTGRES_PASSWORD', '-v', `${dir}:/backup:ro`, IMAGE], { env: { ...process.env, POSTGRES_PASSWORD: password } });
   if (run.status !== 0) fail('No se pudo arrancar el contenedor de prueba: ' + run.stderr);
+  // The container holds the restored database: an abrupt exit (Ctrl+C, closed
+  // window, uncaught error) must remove it too, not only the plaintext files.
+  emergency.set('contenedor', () => spawnSync('docker', ['rm', '-f', '-v', name], { stdio: 'ignore' }));
   const psql = (sqlArgs, input) => docker(['exec', '-i', '-e', 'PGPASSWORD', name, 'psql', '-h', 'localhost', '-U', 'supabase_admin', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-X', '-q', ...sqlArgs],
     { env: { ...process.env, PGPASSWORD: password }, input });
   try {
@@ -375,23 +532,46 @@ function restoreAndFingerprint(dir, manifest, logDir) {
       writeFileSync(log, `${new Date().toISOString()} ${label}\n${r.stderr || ''}\n`, { flag: 'a' });
       fail(`${label}: falló (código ${r.status}). El diagnóstico completo, que puede contener datos, se guarda en la carpeta de la copia (cifrado si la copia lo está; se abre con --decrypt).`);
     };
-    // The image ships a minimal auth schema; replace it with the backed-up one.
-    step('Preparación del contenedor', psql(['-c', 'drop schema if exists auth cascade']));
-    step('Restauración de prueba', psql(['--single-transaction', '-f', '/backup/roles.sql', '-f', '/backup/auth-pre.sql', '-f', '/backup/auth-post.sql', '-f', '/backup/schema.sql',
-      '-f', '/backup/custom-auth-triggers.sql', '-f', '/backup/acl.sql', '-c', 'set session_replication_role = replica', '-f', '/backup/data.sql']));
+    // The image ships minimal auth and storage schemas; replace them with the
+    // backed-up ones.
+    step('Preparación del contenedor', psql(['-c', 'drop schema if exists auth cascade; drop schema if exists storage cascade']));
+    // roles.sql may grant to or configure platform roles that exist in the
+    // real project but not in this local image (e.g. supabase_realtime_admin).
+    // In the throwaway container only, create the ones it references but does
+    // not create itself, as empty NOLOGIN roles. A new Supabase project
+    // already has them.
+    const rolesSql = readFileSync(join(dir, 'roles.sql'), 'utf8');
+    const created = new Set([...rolesSql.matchAll(/^CREATE ROLE "((?:[^"]|"")+)"/gm)].map(m => m[1].replace(/""/g, '"')));
+    // GRANT lines name only roles; in ALTER ROLE lines only the first quoted
+    // name is a role (later ones can be setting names).
+    const names = l => [...l.matchAll(/"((?:[^"]|"")+)"/g)].map(m => m[1].replace(/""/g, '"'));
+    const referenced = new Set(rolesSql.split('\n').flatMap(l => (/^GRANT /.test(l) ? names(l) : /^ALTER ROLE /.test(l) ? names(l).slice(0, 1) : [])));
+    const missing = [...referenced].filter(r => !created.has(r));
+    if (missing.length) step('Roles de plataforma en el contenedor', psql([], missing.map(r => `do $$ begin if not exists (select 1 from pg_roles where rolname = ${"'" + r.replace(/'/g, "''") + "'"}) then create role ${'"' + r.replace(/"/g, '""') + '"'} nologin; end if; end $$;`).join('\n')));
+    step('Restauración de prueba', psql(['--single-transaction', '-f', '/backup/roles.sql', '-f', '/backup/platform-pre.sql', '-f', '/backup/platform-post.sql', '-f', '/backup/schema.sql',
+      '-f', '/backup/custom-triggers.sql', '-f', '/backup/acl.sql', '-c', 'set session_replication_role = replica', '-f', '/backup/data.sql']));
     const split = k => { const [s, ...t] = k.split('.'); return { s, t: t.join('.') }; };
     const tables = Object.keys(manifest.huellas.tablas).map(split), sequences = Object.keys(manifest.huellas.estado_secuencias).map(split);
     const r = step('Huellas de la copia restaurada', psql(['-At'], "set search_path = '';\n" + fingerprintSql(tables, sequences)));
     return JSON.parse(r.stdout.trim().split('\n').pop());
   } finally {
-    if (keepContainer) console.log(`Contenedor de prueba conservado: ${name} (bórralo con: docker rm -f ${name})`);
-    else docker(['rm', '-f', name]);
+    if (keepContainer) {
+      console.log(`Contenedor de prueba conservado: ${name} (bórralo con: docker rm -f -v ${name})`);
+      emergency.delete('contenedor');
+    } else {
+      // Drop the emergency removal only once Docker confirms the container is
+      // gone; otherwise keep it (retried on exit) and report it.
+      docker(['rm', '-f', '-v', name]);
+      const left = docker(['ps', '-a', '-q', '--filter', `name=^/${name}$`]);
+      if (left.status === 0 && !left.stdout.trim()) emergency.delete('contenedor');
+      else fail(`No se pudo confirmar el borrado del contenedor de prueba ${name}, que contiene la base restaurada. Bórralo con: docker rm -f -v ${name}`);
+    }
   }
 }
 
 // JSON with sorted keys, so objects compare by content.
 const stable = v => JSON.stringify(v, (_, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
-const COMPARED = ['funciones', 'permisos', 'permisos_columnas', 'rls', 'permisos_esquemas', 'politicas', 'estructura', 'secuencias', 'estado_secuencias'];
+const COMPARED = ['funciones', 'permisos', 'permisos_columnas', 'rls', 'permisos_esquemas', 'politicas', 'estructura', 'secuencias', 'estado_secuencias', 'triggers_plataforma'];
 function verify(dir, logDir = dir) {
   const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
   let ok = true;
@@ -445,6 +625,7 @@ function verifyBackup(dir) {
   if (!manifest.cifrado) return verify(dir);
   const key = loadKey();
   const tmp = join(dir, '.descifrado-' + randomBytes(4).toString('hex'));
+  emergency.set('verificación', () => { rmSync(tmp, { recursive: true, force: true }); rmSync(join(dir, LOG), { force: true }); });
   try {
     decryptBackup(dir, tmp, key);
     console.log(`✔ Archivos cifrados íntegros y descifrados con la clave ${keyId(key)}`);
@@ -485,6 +666,8 @@ async function backup() {
   const dir = join(base, `talleria-${stamp}`);
   if (existsSync(dir)) fail('La carpeta de la copia ya existe.');
   mkdirSync(dir, { recursive: true });
+  // Until the backup is encrypted, an abrupt exit removes every plaintext file.
+  emergency.set('copia', () => removePlaintext(dir));
   let phase = 'volcado';
   try {
     await backupInto(dir, key, p => { phase = p; });
@@ -499,6 +682,7 @@ async function backup() {
         writeFileSync(join(dir, 'COPIA-NO-VALIDA.txt'), 'La restauración de prueba de esta copia falló y sus archivos se han borrado. Si se pudo guardar, queda solo el diagnóstico, cifrado (descífralo con --decrypt <archivo.enc> --out <carpeta>).\n');
       }
     } else rmSync(dir, { recursive: true, force: true });
+    emergency.delete('copia');
     throw e;
   }
 }
@@ -516,18 +700,18 @@ async function backupInto(dir, key, setPhase) {
   // including comments inside function bodies, which changes their source.
   cliDump(bin, join(dir, 'schema.sql'), ['--keep-comments']);
   cliDump(bin, join(dir, 'data.sql'), ['--data-only', '--use-copy']);
-  console.log('Volcando la estructura del esquema auth…');
-  pgDump(join(dir, 'auth-pre.sql'), ['--schema-only', '--schema=auth', '--section=pre-data']);
-  pgDump(join(dir, 'auth-post.sql'), ['--schema-only', '--schema=auth', '--section=post-data']);
-  // Triggers on auth tables that call public functions cannot be created
-  // before schema.sql; they are restored from custom-auth-triggers.sql.
-  const post = readFileSync(join(dir, 'auth-post.sql'), 'utf8');
-  writeFileSync(join(dir, 'auth-post.sql'), post.replace(/^CREATE TRIGGER .* EXECUTE FUNCTION "public"\..*$/gm, l => '-- (en custom-auth-triggers.sql) ' + l));
+  console.log('Volcando la estructura de los esquemas de plataforma (auth y storage)…');
+  pgDump(join(dir, 'platform-pre.sql'), ['--schema-only', '--schema=auth', '--schema=storage', '--section=pre-data']);
+  pgDump(join(dir, 'platform-post.sql'), ['--schema-only', '--schema=auth', '--schema=storage', '--section=post-data']);
+  // Triggers on platform tables that call public functions cannot be created
+  // before schema.sql; they are restored from custom-triggers.sql.
+  const post = readFileSync(join(dir, 'platform-post.sql'), 'utf8');
+  writeFileSync(join(dir, 'platform-post.sql'), post.replace(/^CREATE TRIGGER .* EXECUTE FUNCTION "public"\..*$/gm, l => '-- (en custom-triggers.sql) ' + l));
   console.log('Leyendo permisos, triggers y huellas del origen después del volcado…');
   const { fp, triggers, acl } = await readSource();
   if (stable(fp) !== stable(before.fp) || stable(acl) !== stable(before.acl) || stable(triggers) !== stable(before.triggers))
     fail('El origen cambió durante la copia (datos, estructura, permisos o secuencias): la copia no es coherente. Repite la copia en un momento sin actividad.');
-  writeFileSync(join(dir, 'custom-auth-triggers.sql'), ['-- Triggers on auth.users that call public functions (recreate them after', '-- restoring into a new Supabase project; schema.sql leaves out the auth schema).', ...triggers, ''].join('\n'));
+  writeFileSync(join(dir, 'custom-triggers.sql'), ['-- Triggers on auth/storage tables that call public functions (recreate them', '-- after restoring into a new Supabase project; schema.sql leaves out those schemas).', ...triggers, ''].join('\n'));
   writeFileSync(join(dir, 'acl.sql'), ['-- Exact privileges of the public schema objects at backup time. Apply after', '-- schema.sql: a Supabase database grants anon/authenticated by default when', '-- each object is created, and schema.sql does not revoke those grants.', ...acl, ''].join('\n'));
   const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
   const manifest = {
@@ -544,13 +728,16 @@ async function backupInto(dir, key, setPhase) {
   verify(dir);
   setPhase('cifrado');
   encryptBackup(dir, key);
+  emergency.delete('copia');
   console.log(`✔ Copia cifrada (AES-256-GCM, clave ${keyId(key)}); los archivos sin cifrar se han borrado`);
   console.log(`Carpeta de la copia: ${dir}`);
 }
 
 try {
   if (initKey) createKey();
-  else if (exportKey) showKey();
+  else if (exportKey) await exportKeyToClipboard();
+  else if (checkKeyCopyFlag) await checkKeyCopy();
+  else if (checkKeyFlag) checkKey();
   else if (decryptDir) decryptCommand(decryptDir, outDir);
   else if (verifyDir) verifyBackup(resolve(verifyDir));
   else await backup();
