@@ -130,6 +130,6 @@ describe('demo: la cita de ejemplo en la hora del taller', () => {
   it('ya no se calcula con la hora del dispositivo', () => {
     const source = readFileSync('src/lib/demo.ts', 'utf8').replace(/\s+/g, ' ');
     expect(source).not.toContain('setHours(');
-    expect(source).toContain("zonedTimeToUtc(tomorrow, '10:00', state.workshop.timezone)");
+    expect(source).toContain("zonedTimeToUtc(nextWorkingDay, '10:00', state.workshop.timezone)");
   });
 });

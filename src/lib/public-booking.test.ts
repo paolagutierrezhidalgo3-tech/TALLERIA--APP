@@ -183,3 +183,17 @@ describe('matrícula de otro cliente en la recepción pública (igual que public
     expect(() => applyCommand(owner, { type: 'intake', id: crypto.randomUUID(), data: { ...intake, phone: '600 000 312', plate: '7788LMN', availability: 'Tardes' }, messages: [{ role: 'user', content: 'Hola' }] }, now)).toThrow('Esta matrícula pertenece a otro cliente');
   });
 });
+
+describe('datos de ejemplo de la demo', () => {
+  it('muestran la recepción digital desde el principio: dos solicitudes online, una con cita reservada por el cliente a las 10:00 del taller', () => {
+    const demo = createDemo();
+    const online = demo.requests.filter(r => demo.conversations.find(c => c.id === r.conversation_id)?.channel === 'public');
+    expect(online).toHaveLength(2);
+    const booked = demo.appointments.find(a => a.notes === 'Reservada por el cliente desde la recepción digital.');
+    expect(booked).toBeDefined();
+    expect(formatSlot(booked!.starts_at, 'Europe/Madrid').endsWith(' 10:00')).toBe(true);
+    expect(demo.requests.find(r => r.id === booked!.request_id)?.status).toBe('cita_creada');
+    expect(demo.audit?.some(a => a.action === 'public_booking')).toBe(true);
+    expect(demo.appointments).toHaveLength(1);
+  });
+});

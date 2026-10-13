@@ -1,5 +1,6 @@
 import { PUBLIC_BOOKING, applyCommand, freeSlots, type Command } from '@/lib/domain';
 import { upgradeDemo } from '@/lib/demo-migration';
+import { createDemo } from '@/lib/demo';
 import { KEY, LEGACY, saveDemo } from '@/lib/repository';
 import type { IntakeSubmission } from './use-intake-wizard';
 export interface PublicWorkshopInfo { name: string; address: string; hours: string; timezone?: string }
@@ -12,19 +13,28 @@ export interface PublicAvailability { timezone: string; duration_minutes: number
  * digital" link be demoed with no Supabase project configured, at the cost
  * of not syncing across devices -- the same limitation the rest of demo
  * mode already has. */
-function readDemoState() {
+function readDemoState(slug?: string) {
   const saved = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY);
-  if (!saved) return null;
+  if (!saved) {
+    // A visitor who opens the sample workshop's public link first (it is
+    // shared from the demo's landing page) gets the same sample demo the
+    // "Explorar demo" button creates, instead of "No encontramos este
+    // taller". Any other slug, or a demo already saved, is left as is.
+    const sample = upgradeDemo(createDemo());
+    if (!slug || sample.workshop.slug !== slug) return null;
+    saveDemo(sample);
+    return sample;
+  }
   try { return upgradeDemo(JSON.parse(saved)); } catch { return null; }
 }
 export function publicDemoWorkshop(slug: string): PublicWorkshopInfo | null {
-  const state = readDemoState();
+  const state = readDemoState(slug);
   if (!state || state.workshop.slug !== slug) return null;
   const { name, address, hours, timezone } = state.workshop;
   return { name, address, hours, timezone };
 }
 export function publicDemoAvailability(slug: string, now = new Date()): PublicAvailability | null {
-  const state = readDemoState();
+  const state = readDemoState(slug);
   if (!state || state.workshop.slug !== slug) return null;
   const from = new Date(now.getTime() + PUBLIC_BOOKING.listLeadMinutes * 60000);
   const to = new Date(now.getTime() + PUBLIC_BOOKING.listDays * 86400000);
@@ -36,7 +46,7 @@ export async function publicDemoIntake(slug: string, submission: IntakeSubmissio
   // public link in another, and without this lock the later write of either
   // one silently clobbers the other instead of applying on top of it.
   const save = () => {
-    const state = readDemoState();
+    const state = readDemoState(slug);
     if (!state || state.workshop.slug !== slug) return false;
     const command: Command = { type: 'intake', ...submission, channel: 'public', consent };
     const next = applyCommand(state, command);

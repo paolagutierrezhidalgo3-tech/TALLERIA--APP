@@ -142,3 +142,44 @@ input.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overf
 .assistant-notice{margin:0;padding:9px 20px;font-size:11px;color:var(--muted);background:#faf9fd;border-bottom:1px solid var(--line)}
 .banner-actions{display:flex;flex-wrap:wrap;gap:8px}
 .booked-by-customer{display:table;margin-top:5px;padding:2px 6px;border-radius:5px;background:#f1edff;color:#7d5fc7;font-size:9px;font-weight:600}
+.landing{min-height:100vh;background:linear-gradient(180deg,#f3effc 0,#fff 560px);color:var(--ink)}
+.landing-header{display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:1120px;margin:0 auto;padding:22px 24px}
+.landing-hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:48px;align-items:center;max-width:1120px;margin:0 auto;padding:36px 24px 56px}
+.landing-hero h1{font-size:42px;line-height:1.15;letter-spacing:-1.4px;margin:14px 0 18px;color:#2f2745}
+.landing-hero h1 em{font-style:normal;color:var(--purple)}
+.landing-lead{font-size:17px;line-height:1.7;color:#4f4a63;max-width:560px}
+.landing-ctas{display:flex;flex-wrap:wrap;gap:12px;margin-top:26px}
+.landing-ctas .button{min-height:48px;padding:12px 20px;font-size:14px}
+.landing-note{display:flex;align-items:center;gap:6px;margin-top:14px;font-size:13px;color:#6b6680}
+.landing-preview{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:0 18px 50px #2f27450f;display:flex;flex-direction:column;gap:12px}
+.preview-chat{align-self:flex-end;max-width:88%;background:var(--purple);color:#fff;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5}
+.preview-chat small{display:block;font-size:9px;font-weight:700;letter-spacing:1px;opacity:.8;margin-bottom:4px}
+.preview-chat.assistant{align-self:flex-start;background:#f3f1f8;color:var(--ink)}
+.preview-booking{display:flex;gap:12px;align-items:center;border:1px solid #ded4f9;background:var(--soft-purple);border-radius:12px;padding:12px 14px;color:#5b3fc4}
+.preview-booking b{display:block;font-size:14px;color:#2f2745}
+.preview-booking small{font-size:12px;color:#6b6680}
+.landing-section{max-width:1120px;margin:0 auto;padding:40px 24px}
+.landing-section h2{font-size:26px;letter-spacing:-.6px;margin-bottom:22px;color:#2f2745}
+.landing-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.landing-grid article{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
+.landing-grid h3{font-size:16px;margin-bottom:8px;color:#2f2745}
+.landing-grid p,.landing-steps p{font-size:14px;line-height:1.65;color:#5a556d}
+.landing-grid .feature-icon{width:44px;height:44px;margin-bottom:14px}
+.landing-steps{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.landing-steps li{display:flex;gap:14px;align-items:flex-start}
+.landing-steps li>span{flex-shrink:0;width:34px;height:34px;border-radius:50%;background:var(--purple);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+.landing-steps b{display:block;font-size:15px;margin-bottom:4px;color:#2f2745}
+.landing-included ul{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 24px}
+.landing-included li{display:flex;gap:10px;align-items:flex-start;font-size:15px;color:#3f3a52}
+.landing-included li svg{color:#3f9d7a;flex-shrink:0;margin-top:3px}
+.landing-final{max-width:1072px;margin:24px auto 0;padding:40px 24px;text-align:center;background:var(--soft-purple);border:1px solid #e3dbf7;border-radius:20px}
+.landing-final h2{font-size:26px;letter-spacing:-.6px;color:#2f2745}
+.landing-final>p{font-size:15px;color:#5a556d;margin-top:10px}
+.landing-final .landing-ctas{justify-content:center}
+.landing-contact{margin-top:18px;font-size:14px;color:#4f4a63}
+.landing-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;max-width:1120px;margin:0 auto;padding:28px 24px;color:#7a758d}
+.demo-tour{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.demo-tour a{color:#6c51de;font-weight:700;font-size:11px;white-space:nowrap}
+@media(max-width:900px){.landing-hero{grid-template-columns:1fr;gap:28px;padding-top:16px}.landing-hero h1{font-size:34px;letter-spacing:-1px}.landing-lead{font-size:16px}.landing-grid,.landing-steps,.landing-included ul{grid-template-columns:1fr}.landing-section{padding:28px 16px}.landing-header,.landing-hero{padding-left:16px;padding-right:16px}.landing-final{margin:16px 16px 0;padding:28px 16px}.landing-ctas .button{flex:1 1 100%}.landing-footer{padding:24px 16px}}
+.demo-strip{font-size:12px}
+.demo-strip button,.demo-tour a{font-size:12px}

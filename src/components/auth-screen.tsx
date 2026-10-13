@@ -5,6 +5,7 @@ import { getSupabase, isSupabaseMode } from '@/lib/supabase/client';
 import { termsAcceptanceMetadata } from '@/lib/terms';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, RESEND_SENT, SIGNUP_SENT, newPasswordProblem, recoveryErrorMessage, resendErrorMessage, signInErrorMessage, signUpErrorMessage } from '@/lib/auth-messages';
 import { Field } from './ui';
+import { DemoLanding } from './demo-landing';
 export function AuthScreen({ onDemo }: { onDemo: () => void }) {
   const [register, setRegister] = useState(false);
   const [forgot, setForgot] = useState(false);
@@ -55,6 +56,9 @@ export function AuthScreen({ onDemo }: { onDemo: () => void }) {
     }
     finally { setBusy(false); }
   }
+  // The public demo gets its own landing page; production (Supabase mode)
+  // keeps this login screen exactly as it is.
+  if (!isSupabaseMode) return <DemoLanding onDemo={onDemo}/>;
   function backToLogin() { setForgot(false); setForgotSent(false); setMessage(''); setUnconfirmedEmail(''); }
   return <main className="auth-layout"><section className="auth-story"><div className="brand"><span className="brand-mark"><Wrench size={22}/></span>TALLERIA<span className="brand-dot">.</span></div><div><span className="eyebrow">MÁS TIEMPO PARA TU TALLER</span><h1>Ocúpate del motor.<br/><em>Nosotros, del resto.</em></h1><p>De la primera consulta a la próxima cita. Toda la recepción de tu taller, en un mismo lugar.</p><div className="auth-benefits">{['Cada consulta, bien organizada', 'Clientes y vehículos conectados', 'Una agenda que trabaja contigo'].map(t => <p key={t}><Check size={18}/>{t}</p>)}</div></div><small>Hecho para talleres que no paran.</small></section><section className="auth-form">{isSupabaseMode && forgot ? <>
     <span className="eyebrow">RECUPERAR ACCESO</span><h2>Restablece tu contraseña</h2>
