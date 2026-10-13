@@ -168,3 +168,18 @@ describe('demos guardadas antes del horario de ejemplo', () => {
     expect(upgradeDemo({ ...workshop(), schema_version: 6 } as State).hours).toEqual([{ day_of_week: 1, opens_at: '09:00', closes_at: '11:00' }]);
   });
 });
+
+describe('matrícula de otro cliente en la recepción pública (igual que public_intake)', () => {
+  it('el visitante anónimo no recibe un error que revele de quién es; la matrícula simplemente no se enlaza', () => {
+    const owner = book(workshop(), undefined, { ...intake, phone: '600 000 311', plate: '7788LMN', availability: 'Tardes' });
+    const s = book(owner, NINE, { ...intake, phone: '600 000 312', plate: '7788 lmn' });
+    const visitor = s.customers.find(c => c.phone === '+34600000312')!;
+    expect(s.vehicles.find(v => v.customer_id === visitor.id)).toMatchObject({ plate: '', brand: 'SEAT', model: 'León' });
+    expect(s.vehicles.filter(v => v.plate === '7788LMN').map(v => v.customer_id)).toEqual([owner.customers[0].id]);
+    expect(s.requests[0]).toMatchObject({ status: 'cita_creada' });
+  });
+  it('el registro manual del equipo sigue avisando de la matrícula de otro cliente', () => {
+    const owner = book(workshop(), undefined, { ...intake, phone: '600 000 311', plate: '7788LMN', availability: 'Tardes' });
+    expect(() => applyCommand(owner, { type: 'intake', id: crypto.randomUUID(), data: { ...intake, phone: '600 000 312', plate: '7788LMN', availability: 'Tardes' }, messages: [{ role: 'user', content: 'Hola' }] }, now)).toThrow('Esta matrícula pertenece a otro cliente');
+  });
+});

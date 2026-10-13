@@ -300,9 +300,18 @@ export function applyCommand(current: State, command: Command, now = new Date())
     }
     let customer = s.customers.find(c => tryNormalizePhone(c.phone) === normalizePhone(d.phone));
     if (!customer) { customer = { id: crypto.randomUUID(), workshop_id, name: d.name, phone: d.phone, phone_e164: d.phone, notes: '', version: 1 }; s.customers.push(customer); }
-    let vehicle = s.vehicles.find(v => d.plate ? v.plate === d.plate : v.customer_id === customer.id && v.brand.toLowerCase() === d.brand.toLowerCase() && v.model.toLowerCase() === d.model.toLowerCase());
-    if (vehicle && vehicle.customer_id !== customer.id) throw new Error('Esta matrícula pertenece a otro cliente. Revisa el teléfono y la matrícula.');
-    if (!vehicle) { vehicle = { id: crypto.randomUUID(), workshop_id, customer_id: customer.id, brand: d.brand, model: d.model, plate: d.plate, version: 1 }; s.vehicles.push(vehicle); }
+    let plate = d.plate;
+    let vehicle = s.vehicles.find(v => plate ? v.plate === plate : v.customer_id === customer.id && v.brand.toLowerCase() === d.brand.toLowerCase() && v.model.toLowerCase() === d.model.toLowerCase());
+    if (vehicle && vehicle.customer_id !== customer.id) {
+      // Mirrors public_intake: an anonymous visitor is never told that a
+      // plate belongs to another customer (that answer would be an oracle).
+      // The colliding plate is just not linked; what they typed stays in the
+      // conversation for staff to reconcile. Staff intake still refuses it.
+      if (command.channel !== 'public') throw new Error('Esta matrícula pertenece a otro cliente. Revisa el teléfono y la matrícula.');
+      plate = '';
+      vehicle = s.vehicles.find(v => v.customer_id === customer.id && v.brand.toLowerCase() === d.brand.toLowerCase() && v.model.toLowerCase() === d.model.toLowerCase());
+    }
+    if (!vehicle) { vehicle = { id: crypto.randomUUID(), workshop_id, customer_id: customer.id, brand: d.brand, model: d.model, plate, version: 1 }; s.vehicles.push(vehicle); }
     // A reviewed intake can correct the description of the same customer's plate.
     if (vehicle.brand !== d.brand || vehicle.model !== d.model) {
       vehicle.brand = d.brand; vehicle.model = d.model; vehicle.version = (vehicle.version ?? 1) + 1;

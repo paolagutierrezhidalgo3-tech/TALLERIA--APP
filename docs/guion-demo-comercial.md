@@ -13,7 +13,7 @@ Duración: 10–12 minutos. Todo con datos ficticios en modo demo: nada se enví
 1. **El problema (1 min).** El taller pierde llamadas mientras trabaja y apunta las citas en papel o en WhatsApp.
 2. **El panel (2 min).** Dashboard con las solicitudes nuevas, las próximas citas y la actividad. Solicitudes con su estado, clientes y vehículos enlazados.
 3. **La recepción del cliente (3 min).** En la pestaña pública, escribir como un cliente:
-   - «Hola, soy Marta, tengo un Seat Ibiza 1234BCD y chirrían los frenos»;
+   - «Hola, soy Marta, tengo un Seat Ibiza 7788LMN y chirrían los frenos»;
    - un teléfono ficticio (600 000 xxx);
    - «el jueves por la tarde», y después elegir una hora.
 
