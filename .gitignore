@@ -9,3 +9,6 @@ test-results/
 playwright-report/
 Claude outputs/
 .vercel
+
+# Datos comerciales del piloto (contactos de terceros y notas): nunca al repositorio público
+docs/piloto/privado/
